@@ -7,9 +7,9 @@ const practiceQuestions = [
   { topic: 'Binary Search', question: 'What is required for binary search to work correctly?', options: ['The list must be sorted', 'The list must be unsorted', 'The list must contain only numbers', 'The list must have an even number of elements'], correctIndex: 0, explanation: 'Binary search relies on repeatedly halving a sorted list — it does not work correctly on unsorted data.' }
 ]
 
-function logAttempt(topic, correct) {
+function logAttempt(topic, correct, question) {
   const existing = JSON.parse(localStorage.getItem('student-progress-log') || '[]')
-  existing.push({ topic, correct, timestamp: Date.now() })
+  existing.push({ topic, correct, question, timestamp: Date.now() })
   localStorage.setItem('student-progress-log', JSON.stringify(existing))
 }
 
@@ -27,7 +27,7 @@ function PracticeScreen() {
     setSelectedOption(index)
     setShowFeedback(true)
     const isCorrect = index === current.correctIndex
-    logAttempt(current.topic, isCorrect)
+    logAttempt(current.topic, isCorrect, current.question)
     if (!isCorrect) {
       setWeakTopics(prev => [...prev, current.topic])
     }
