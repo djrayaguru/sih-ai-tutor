@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AI Tutor</title>
+
+    <script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet" />
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+
+    <script id="tailwind-config">
+      tailwind.config = {
+        theme: {
+          extend: {
+            colors: {
+              "surface-variant": "#d3e4fe",
+              "surface-bright": "#f8f9ff",
+              "surface-dim": "#cbdbf5",
+              "surface-container": "#e5eeff",
+              "primary": "#3525cd",
+              "background": "#f8f9ff",
+              "on-surface": "#0b1c30",
+              "primary-fixed": "#e2dfff",
+              "outline": "#777587",
+              "surface-soft": "#f8fafc",
+              "surface": "#f8f9ff",
+              "surface-container-low": "#eff4ff",
+              "on-primary-container": "#dad7ff",
+              "surface-container-high": "#dce9ff",
+              "primary-container": "#4f46e5",
+              "on-surface-variant": "#464555",
+              "on-primary": "#ffffff",
+              "indigo-wash": "#eef2ff",
+              "secondary": "#006590",
+              "surface-container-highest": "#d3e4fe",
+              "outline-variant": "#c7c4d8",
+              "secondary-container": "#2fb8ff",
+              "surface-container-lowest": "#ffffff"
+            },
+            borderRadius: { DEFAULT: "0.25rem", lg: "0.5rem", xl: "0.75rem", full: "9999px" },
+            spacing: { md: "24px", "margin-desktop": "48px", gutter: "24px", xs: "8px", sm: "16px", base: "4px", lg: "40px", "margin-mobile": "16px", xl: "64px" },
+            fontFamily: {
+              "label-md": ["Plus Jakarta Sans"], "title-md": ["Plus Jakarta Sans"], "headline-lg": ["Plus Jakarta Sans"],
+              "caption": ["Plus Jakarta Sans"], "body-md": ["Plus Jakarta Sans"], "body-lg": ["Plus Jakarta Sans"],
+              "headline-lg-mobile": ["Plus Jakarta Sans"]
+            },
+            fontSize: {
+              "label-md": ["14px", { lineHeight: "20px", letterSpacing: "0.01em", fontWeight: "600" }],
+              "title-md": ["20px", { lineHeight: "28px", fontWeight: "600" }],
+              "headline-lg": ["32px", { lineHeight: "40px", letterSpacing: "-0.01em", fontWeight: "700" }],
+              "caption": ["12px", { lineHeight: "16px", fontWeight: "500" }],
+              "body-md": ["16px", { lineHeight: "24px", fontWeight: "400" }],
+              "body-lg": ["18px", { lineHeight: "28px", fontWeight: "400" }],
+              "headline-lg-mobile": ["28px", { lineHeight: "36px", fontWeight: "700" }]
+            }
+          }
+        }
+      }
+    </script>
+
+    <style>
+      body { font-family: 'Plus Jakarta Sans', sans-serif; margin: 0; }
+      .material-symbols-outlined { font-variation-settings: 'FILL' 1; }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>
