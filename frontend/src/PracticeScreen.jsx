@@ -2,9 +2,9 @@ import { useState } from 'react'
 import './App.css'
 
 const practiceQuestions = [
-  { topic: 'Recursion', question: 'What happens if a recursive function has no base case?', options: ['It runs once and stops', 'It runs forever until the program crashes', 'It automatically returns 0', 'It skips to the next function'], correctIndex: 1, explanation: 'Without a base case, the function keeps calling itself with no stopping point, eventually causing a stack overflow.' },
-  { topic: 'Linked List', question: 'What does each node in a linked list contain?', options: ['Only data', 'Only a pointer to the next node', 'Data and a pointer to the next node', 'A fixed array index'], correctIndex: 2, explanation: 'Each node stores its own data plus a reference (pointer) to the next node in the sequence.' },
-  { topic: 'Binary Search', question: 'What is required for binary search to work correctly?', options: ['The list must be sorted', 'The list must be unsorted', 'The list must contain only numbers', 'The list must have an even number of elements'], correctIndex: 0, explanation: 'Binary search relies on repeatedly halving a sorted list — it does not work correctly on unsorted data.' }
+  { topic: 'Linear Equations', question: 'What is the general form of a linear equation in two variables?', options: ['Ax + By + C = 0', 'Ax^2 + B = 0', 'A/x + B/y = 0', 'Ax + B = C^2'], correctIndex: 0, explanation: 'A linear equation in two variables is written as Ax + By + C = 0, where A and B are not both zero — it represents a straight line.' },
+  { topic: 'Binomial Theorem', question: 'What does the Binomial Theorem help you do?', options: ['Solve quadratic equations', 'Expand expressions like (a+b)^n', 'Find derivatives', 'Calculate probability'], correctIndex: 1, explanation: 'The Binomial Theorem provides a formula for expanding powers of a binomial like (a+b)^n without multiplying it out term by term.' },
+  { topic: 'Probability', question: 'What is the probability of a certain (sure) event?', options: ['0', '0.5', '1', 'Cannot be determined'], correctIndex: 2, explanation: 'A certain event is guaranteed to happen, so its probability is always 1 — the maximum value probability can take.' }
 ]
 
 function logAttempt(topic, correct, question) {

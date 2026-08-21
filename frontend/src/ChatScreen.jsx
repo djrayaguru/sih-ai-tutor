@@ -1,64 +1,64 @@
 import { useState, useEffect } from 'react'
+import ReactMarkdown from 'react-markdown'
+import remarkMath from 'remark-math'
+import remarkGfm from 'remark-gfm'
+import rehypeKatex from 'rehype-katex'
+import 'katex/dist/katex.min.css'
 import './App.css'
 
-const fakeKnowledgeBase = [
-  { keyword: 'recursion', answer: 'Recursion is when a function calls itself to solve smaller instances of the same problem.', source: 'Page 12, Unit 3 — Recursion', topicKey: 'recursion' },
-  { keyword: 'linked list', answer: 'A linked list is a data structure where each element (node) points to the next one, instead of sitting in one continuous block like an array.', source: 'Page 5, Unit 2 — Data Structures', topicKey: 'linked list' },
-  { keyword: 'binary search', answer: 'Binary search finds an item in a sorted list by repeatedly checking the middle element and eliminating half the list each time.', source: 'Page 20, Unit 4 — Searching Algorithms', topicKey: 'binary search' }
-]
-
 const quizBank = {
-  'recursion': {
+  'linear equation': {
     easy: [
-      { question: 'What is recursion?', options: ['A loop that never ends', 'A function calling itself to solve a smaller version of the problem', 'A way to sort arrays', 'A type of variable'], correctIndex: 1 },
-      { question: 'What must every recursive function have to stop eventually?', options: ['A loop', 'A base case', 'A return type', 'A class'], correctIndex: 1 }
+      { question: 'What is the general form of a linear equation in two variables?', options: ['Ax + By + C = 0', 'Ax^2 + B = 0', 'A/x + B/y = 0', 'Ax + B = C^2'], correctIndex: 0 },
+      { question: 'How many variables does a linear equation in two variables have?', options: ['One', 'Two', 'Three', 'It varies'], correctIndex: 1 }
     ],
     medium: [
-      { question: 'What happens without a base case?', options: ['Function runs once', 'Infinite recursion until stack overflow', 'Function returns null', 'Nothing, it self-corrects'], correctIndex: 1 },
-      { question: 'Each recursive call adds a frame to the:', options: ['Heap', 'Call stack', 'Hash map', 'Database'], correctIndex: 1 }
+      { question: 'If 2x + 3y = 6, what is y when x = 0?', options: ['y = 0', 'y = 1', 'y = 2', 'y = 3'], correctIndex: 2 },
+      { question: 'How many solutions does a linear equation in two variables have?', options: ['Exactly one', 'Exactly two', 'None', 'Infinitely many'], correctIndex: 3 }
     ],
     hard: [
-      { question: 'Time complexity of naive recursive Fibonacci?', options: ['O(n)', 'O(log n)', 'O(2^n)', 'O(n^2)'], correctIndex: 2 },
-      { question: 'Which technique avoids recomputation in recursion?', options: ['Memoization', 'Iteration only', 'Garbage collection', 'Type casting'], correctIndex: 0 }
+      { question: 'Geometrically, what does it mean when two linear equations have no common solution?', options: ['The lines are parallel', 'The lines are perpendicular', 'The lines are identical', 'The lines intersect twice'], correctIndex: 0 },
+      { question: 'When do two linear equations in two variables have a unique solution?', options: ['When the lines are parallel', 'When the lines coincide', 'When the lines intersect at exactly one point', 'Never'], correctIndex: 2 }
     ]
   },
-  'linked list': {
+  'binomial theorem': {
     easy: [
-      { question: 'What does each node store?', options: ['Only data', 'Data and a pointer to the next node', 'An index number', 'A fixed array'], correctIndex: 1 },
-      { question: 'The first node of a linked list is called the:', options: ['Root', 'Head', 'Tail', 'Anchor'], correctIndex: 1 }
+      { question: 'What does the Binomial Theorem help you do?', options: ['Solve quadratic equations', 'Expand expressions like (a+b)^n', 'Find derivatives', 'Calculate probability'], correctIndex: 1 },
+      { question: 'In (a+b)^n, what is "n" called?', options: ['The base', 'The coefficient', 'The index or exponent', 'The remainder'], correctIndex: 2 }
     ],
     medium: [
-      { question: 'The last node usually points to:', options: ['The head', 'Itself', 'null', 'A random node'], correctIndex: 2 },
-      { question: 'A key disadvantage of linked lists vs arrays:', options: ['No random access', 'Cannot store numbers', 'Always sorted', 'Uses less memory'], correctIndex: 0 }
+      { question: 'What is the general term in a binomial expansion usually denoted as?', options: ['T(n)', 'T(r+1)', 'T(0)', 'T(a+b)'], correctIndex: 1 },
+      { question: 'The numbers multiplying each term in a binomial expansion are called:', options: ['Binomial coefficients', 'Linear coefficients', 'Prime factors', 'Exponential terms'], correctIndex: 0 }
     ],
     hard: [
-      { question: 'Time complexity of inserting at the head?', options: ['O(n)', 'O(1)', 'O(log n)', 'O(n^2)'], correctIndex: 1 },
-      { question: 'In a doubly linked list, each node points to:', options: ['Only next', 'Only previous', 'Both next and previous', 'Nothing'], correctIndex: 2 }
+      { question: 'What is the sum of all binomial coefficients in the expansion of (1+x)^n?', options: ['n', '2n', '2^n', 'n^2'], correctIndex: 2 },
+      { question: 'A single middle term exists in a binomial expansion when n is:', options: ['Odd', 'Even', 'Zero', 'Negative'], correctIndex: 1 }
     ]
   },
-  'binary search': {
+  'probability': {
     easy: [
-      { question: 'What must be true before binary search works?', options: ['List must be sorted', 'List must be unsorted', 'Even length', 'Only strings'], correctIndex: 0 },
-      { question: 'Binary search repeatedly checks:', options: ['The first element', 'The last element', 'The middle element', 'A random element'], correctIndex: 2 }
+      { question: 'The probability of any event lies between:', options: ['-1 and 1', '0 and 1', '1 and 10', '0 and 100'], correctIndex: 1 },
+      { question: 'What is the probability of a certain (sure) event?', options: ['0', '0.5', '1', 'Cannot be determined'], correctIndex: 2 }
     ],
     medium: [
-      { question: 'Time complexity of binary search?', options: ['O(n)', 'O(log n)', 'O(n log n)', 'O(1)'], correctIndex: 1 },
-      { question: 'If middle < target, search next in the:', options: ['Left half', 'Right half', 'Whole list again', 'Nowhere'], correctIndex: 1 }
+      { question: 'If P(A) = 0.3, what is P(not A)?', options: ['0.3', '0.7', '1.3', '0'], correctIndex: 1 },
+      { question: 'The basic formula for probability of an event is:', options: ['Total outcomes / favorable outcomes', 'Favorable outcomes / total outcomes', 'Favorable outcomes × total outcomes', 'Total outcomes - favorable outcomes'], correctIndex: 1 }
     ],
     hard: [
-      { question: 'Time complexity of linear search, for comparison?', options: ['O(log n)', 'O(1)', 'O(n)', 'O(n^2)'], correctIndex: 2 },
-      { question: 'Binary search can be implemented using:', options: ['Only recursion', 'Only iteration', 'Both recursion and iteration', 'Neither'], correctIndex: 2 }
+      { question: 'For two mutually exclusive events A and B, P(A or B) equals:', options: ['P(A) × P(B)', 'P(A) − P(B)', 'P(A) + P(B)', 'P(A) / P(B)'], correctIndex: 2 },
+      { question: 'If two fair dice are rolled, how many total possible outcomes are there?', options: ['6', '12', '24', '36'], correctIndex: 3 }
     ]
   }
 }
 
 const levelOrder = ['easy', 'medium', 'hard']
+const KNOWN_TOPICS = ['linear equation', 'binomial theorem', 'probability']
 
 function createEmptySession() {
   return {
     id: Date.now(),
     title: 'New chat',
-    messages: [{ sender: 'bot', type: 'normal', text: 'Hi! Try asking me about recursion, linked lists, or binary search — or ask something unrelated to see what happens.' }]
+    messages: [{ sender: 'bot', type: 'normal', text: 'Hi! Try asking me about linear equations, the binomial theorem, or probability — or ask something unrelated to see what happens.' }]
   }
 }
 
@@ -87,30 +87,46 @@ function ChatScreen() {
     setSessions(prev => prev.map(s => s.id === activeSession.id ? { ...s, messages: updater(s.messages) } : s))
   }
 
-  function handleSend() {
+  async function handleSend() {
     if (input.trim() === '') return
-    const query = input.toLowerCase()
-    const userMsg = { sender: 'user', type: 'normal', text: input }
+    const query = input
     setInput('')
 
     setSessions(prev => prev.map(s => {
       if (s.id !== activeSession.id) return s
       const isFirstUserMessage = s.messages.filter(m => m.sender === 'user').length === 0
-      return { ...s, title: isFirstUserMessage ? input.slice(0, 28) : s.title, messages: [...s.messages, userMsg] }
+      return {
+        ...s,
+        title: isFirstUserMessage ? query.slice(0, 28) : s.title,
+        messages: [...s.messages, { sender: 'user', type: 'normal', text: query }, { sender: 'bot', type: 'thinking', text: 'Thinking...' }]
+      }
     }))
 
-    setTimeout(() => {
-      const match = fakeKnowledgeBase.find(item => query.includes(item.keyword))
-      if (match) {
-        updateActiveMessages(msgs => [
-          ...msgs,
-          { sender: 'bot', type: 'citation', text: match.answer, source: match.source },
-          { sender: 'bot', type: 'offer-quiz', topic: match.topicKey }
-        ])
+    try {
+      const res = await fetch('http://localhost:8000/api/ask', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query })
+      })
+      const data = await res.json()
+
+      if (data.refused) {
+        updateActiveMessages(msgs => [...msgs.filter(m => m.type !== 'thinking'), { sender: 'bot', type: 'refusal', text: data.answer }])
       } else {
-        updateActiveMessages(msgs => [...msgs, { sender: 'bot', type: 'refusal', text: "I don't have enough information in the course material to answer that confidently." }])
+        const cleanedAnswer = data.answer.replace(/\n*\*?\(?Source:[^)]*\)?\*?\s*$/i, '').trim()
+        const firstSource = data.sources && data.sources[0]
+        const newMsgs = [{
+          sender: 'bot', type: 'citation', text: cleanedAnswer,
+          source: firstSource ? `${firstSource.source_file}, page ${firstSource.page}` : 'Course material'
+        }]
+        const lowerQuery = query.toLowerCase()
+        const knownTopic = KNOWN_TOPICS.find(t => lowerQuery.includes(t))
+        if (knownTopic) newMsgs.push({ sender: 'bot', type: 'offer-quiz', topic: knownTopic })
+        updateActiveMessages(msgs => [...msgs.filter(m => m.type !== 'thinking'), ...newMsgs])
       }
-    }, 600)
+    } catch {
+      updateActiveMessages(msgs => [...msgs.filter(m => m.type !== 'thinking'), { sender: 'bot', type: 'refusal', text: "Couldn't reach the tutor server. Make sure it's running (uvicorn api:app --reload --port 8000)." }])
+    }
   }
 
   function startQuiz(topic) {
@@ -208,14 +224,16 @@ function ChatScreen() {
             }
             return (
               <div key={index} className={`message ${msg.sender} ${msg.type}`}>
-                <div>{msg.text}</div>
+                <ReactMarkdown remarkPlugins={[remarkMath, remarkGfm]} rehypePlugins={[rehypeKatex]}>
+                  {msg.text}
+                </ReactMarkdown>
                 {msg.type === 'citation' && <div className="citation-source">📄 Source: {msg.source}</div>}
               </div>
             )
           })}
         </div>
         <div className="input-area">
-          <input value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleSend()} placeholder="Ask about recursion, linked lists, binary search..." />
+          <input value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleSend()} placeholder="Ask about linear equations, binomial theorem, probability..." />
           <button onClick={handleSend}>Send</button>
         </div>
       </div>
