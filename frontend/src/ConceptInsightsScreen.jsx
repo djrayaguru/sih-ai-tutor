@@ -67,7 +67,7 @@ function ConceptInsightsScreen() {
         <ResponsiveContainer width="100%" height={260}>
           <BarChart data={data.topics}>
             <CartesianGrid strokeDasharray="3 3" />
-            <XAxis dataKey="topic" tick={{ fontSize: 11 }} interval={0} angle={-15} textAnchor="end" height={70} />
+            <XAxis dataKey="topic" tick={{ fontSize: 12 }} interval={0} />
             <YAxis domain={[0, 100]} />
             <Tooltip />
             <Bar dataKey="struggle_rate" fill="#4f46e5" radius={[6, 6, 0, 0]} />
