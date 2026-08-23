@@ -4,43 +4,17 @@ os.environ["HF_HUB_OFFLINE"] = "1"
 import json
 import os
 import re
-import time
+from datetime import datetime
 import faiss
 from sentence_transformers import SentenceTransformer
 import google.generativeai as genai
-from google.api_core.exceptions import ResourceExhausted
 from dotenv import load_dotenv
-import db
 
 load_dotenv()
 genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 
 CONFIDENCE_THRESHOLD = 0.3
-
-
-def safe_generate(prompt, max_retries=5, base_delay=8):
-    """
-    Retry-with-backoff for free-tier rate limits. A per-DAY quota can't be
-    fixed by waiting a few minutes, so we fail fast with a clear message
-    instead of burning time on retries that can't succeed.
-    """
-    delay = base_delay
-    for attempt in range(max_retries):
-        try:
-            return llm.generate_content(prompt)
-        except ResourceExhausted as e:
-            if "PerDay" in str(e):
-                raise RuntimeError(
-                    "Gemini free-tier DAILY quota exhausted for this model/key. "
-                    "This resets ~24h after your first call today — retrying now won't help. "
-                    "Enable billing (pay-as-you-go) on your Google AI Studio project to remove "
-                    "this cap, or wait for the daily reset."
-                ) from e
-            if attempt == max_retries - 1:
-                raise
-            print(f"[Rate limit hit — waiting {delay}s before retry {attempt + 1}/{max_retries}]")
-            time.sleep(delay)
-            delay *= 2
+GAPS_FILE = "gaps.json"
 
 with open("chunks.json", "r", encoding="utf-8") as f:
     chunks = json.load(f)
@@ -55,7 +29,6 @@ def retrieve(query, top_k=3):
     faiss.normalize_L2(query_vec)
     scores, indices = index.search(query_vec, top_k)
     return [{**chunks[idx], "score": float(score)} for score, idx in zip(scores[0], indices[0])]
-
 
 def normalize_topic(topic):
     """Lowercase and strip to bare words, so 'Linear Equations!' and 'linear equation' compare fairly."""
@@ -75,16 +48,13 @@ def topics_match(topic_a, topic_b):
     return len(overlap) / smaller >= 0.5  # at least half the shorter topic's words match
 
 
-def get_difficulty(student_id, topic):
-    """
-    Per-student difficulty. Filters gap history to this student only, so one
-    student's accuracy on a topic never affects another student's difficulty
-    curve for the same topic. Fuzzy topic matching (topics_match) still
-    happens in Python since it's word-overlap logic, not something SQL does
-    natively — the database just replaces where the raw attempt rows live.
-    """
-    student_attempts = db.get_attempts_for_student(student_id)
-    topic_attempts = [g for g in student_attempts if topics_match(g["topic"], topic)]
+def get_difficulty(topic):
+    if not os.path.exists(GAPS_FILE):
+        return "medium"
+    with open(GAPS_FILE, "r") as f:
+        gaps = json.load(f)
+
+    topic_attempts = [g for g in gaps if topics_match(g["topic"], topic)]
     if not topic_attempts:
         return "medium"
 
@@ -98,20 +68,19 @@ def get_difficulty(student_id, topic):
     else:
         return "medium"
 
-
 def extract_json(text):
     """LLMs sometimes wrap JSON in markdown fences — strip those before parsing."""
     text = re.sub(r"^```json\s*|\s*```$", "", text.strip())
     return json.loads(text)
 
 
-def generate_problem(topic, student_id):
+def generate_problem(topic):
     results = retrieve(topic)
     if results[0]["score"] < CONFIDENCE_THRESHOLD:
         print("Not enough material on this topic to generate a practice problem.")
         return None
 
-    difficulty = get_difficulty(student_id, topic)
+    difficulty = get_difficulty(topic)
     print(f"[Difficulty selected: {difficulty}]")
 
     context = "\n\n".join(r["text"] for r in results)
@@ -129,11 +98,12 @@ Context:
 Respond with ONLY valid JSON, no markdown, no extra text, in this exact format:
 {{"problem": "the question text", "answer": "the correct answer", "topic": "{topic}", "difficulty": "{difficulty}"}}"""
 
-    response = safe_generate(prompt)
+    response = llm.generate_content(prompt)
     try:
-        return extract_json(response.text)
+        data = extract_json(response.text)
+        return data
     except Exception as e:
-        print(f"Could not parse problem generation: {e}")
+        print(f"Could not parse problem generation response: {e}")
         return None
 
 
@@ -146,7 +116,7 @@ Judge if the student's answer is correct. Accept equivalent forms (e.g. differen
 simplified vs unsimplified, with/without units if implied). Respond with ONLY valid JSON:
 {{"correct": true or false, "feedback": "one short sentence explaining why"}}"""
 
-    response = safe_generate(prompt)
+    response = llm.generate_content(prompt)
     try:
         return extract_json(response.text)
     except Exception as e:
@@ -154,13 +124,24 @@ simplified vs unsimplified, with/without units if implied). Respond with ONLY va
         return {"correct": False, "feedback": "Could not evaluate answer."}
 
 
-def log_gap(student_id, topic, correct, difficulty):
-    db.log_gap(student_id, topic, correct, difficulty)
+def log_gap(topic, correct, difficulty):
+    gaps = []
+    if os.path.exists(GAPS_FILE):
+        with open(GAPS_FILE, "r") as f:
+            gaps = json.load(f)
+    gaps.append({
+        "topic": topic,
+        "correct": correct,
+        "difficulty": difficulty,
+        "timestamp": datetime.now().isoformat()
+    })
+    with open(GAPS_FILE, "w") as f:
+        json.dump(gaps, f, indent=2)
 
 
-def practice_session(student_id):
+def practice_session():
     topic = input("What topic do you want to practice? ")
-    problem_data = generate_problem(topic, student_id)
+    problem_data = generate_problem(topic)
     if not problem_data:
         return
 
@@ -172,17 +153,16 @@ def practice_session(student_id):
     if judgment["correct"]:
         print(f"\n✓ Correct! {judgment['feedback']}")
     else:
-        print(f"\nX Not quite. {judgment['feedback']}")
+        print(f"\n✗ Not quite. {judgment['feedback']}")
         print(f"Correct answer: {problem_data['answer']}")
 
-    log_gap(student_id, topic, judgment["correct"], problem_data.get("difficulty", "medium"))
-    print(f"Logged to {db.DB_FILE}")
+    log_gap(topic, judgment["correct"], problem_data.get("difficulty", "medium"))
+    print(f"Logged to {GAPS_FILE}")
 
 
 if __name__ == "__main__":
-    student_id = input("Enter your name/ID to start practicing: ").strip()
     while True:
-        practice_session(student_id)
+        practice_session()
         again = input("\nPractice another topic? (y/n): ")
         if again.lower() != "y":
             break

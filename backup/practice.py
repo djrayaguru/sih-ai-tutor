@@ -5,37 +5,27 @@ import json
 import os
 import re
 import time
+from datetime import datetime
 import faiss
 from sentence_transformers import SentenceTransformer
 import google.generativeai as genai
 from google.api_core.exceptions import ResourceExhausted
 from dotenv import load_dotenv
-import db
 
 load_dotenv()
 genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 
 CONFIDENCE_THRESHOLD = 0.3
+GAPS_FILE = "gaps.json"
 
 
 def safe_generate(prompt, max_retries=5, base_delay=8):
-    """
-    Retry-with-backoff for free-tier rate limits. A per-DAY quota can't be
-    fixed by waiting a few minutes, so we fail fast with a clear message
-    instead of burning time on retries that can't succeed.
-    """
+    """Retry-with-backoff wrapper for free-tier rate limits (429 ResourceExhausted)."""
     delay = base_delay
     for attempt in range(max_retries):
         try:
             return llm.generate_content(prompt)
-        except ResourceExhausted as e:
-            if "PerDay" in str(e):
-                raise RuntimeError(
-                    "Gemini free-tier DAILY quota exhausted for this model/key. "
-                    "This resets ~24h after your first call today — retrying now won't help. "
-                    "Enable billing (pay-as-you-go) on your Google AI Studio project to remove "
-                    "this cap, or wait for the daily reset."
-                ) from e
+        except ResourceExhausted:
             if attempt == max_retries - 1:
                 raise
             print(f"[Rate limit hit — waiting {delay}s before retry {attempt + 1}/{max_retries}]")
@@ -79,12 +69,17 @@ def get_difficulty(student_id, topic):
     """
     Per-student difficulty. Filters gap history to this student only, so one
     student's accuracy on a topic never affects another student's difficulty
-    curve for the same topic. Fuzzy topic matching (topics_match) still
-    happens in Python since it's word-overlap logic, not something SQL does
-    natively — the database just replaces where the raw attempt rows live.
+    curve for the same topic.
     """
-    student_attempts = db.get_attempts_for_student(student_id)
-    topic_attempts = [g for g in student_attempts if topics_match(g["topic"], topic)]
+    if not os.path.exists(GAPS_FILE):
+        return "medium"
+    with open(GAPS_FILE, "r") as f:
+        gaps = json.load(f)
+
+    topic_attempts = [
+        g for g in gaps
+        if g.get("student_id") == student_id and topics_match(g["topic"], topic)
+    ]
     if not topic_attempts:
         return "medium"
 
@@ -155,7 +150,19 @@ simplified vs unsimplified, with/without units if implied). Respond with ONLY va
 
 
 def log_gap(student_id, topic, correct, difficulty):
-    db.log_gap(student_id, topic, correct, difficulty)
+    gaps = []
+    if os.path.exists(GAPS_FILE):
+        with open(GAPS_FILE, "r") as f:
+            gaps = json.load(f)
+    gaps.append({
+        "student_id": student_id,
+        "topic": topic,
+        "correct": correct,
+        "difficulty": difficulty,
+        "timestamp": datetime.now().isoformat()
+    })
+    with open(GAPS_FILE, "w") as f:
+        json.dump(gaps, f, indent=2)
 
 
 def practice_session(student_id):
@@ -176,7 +183,7 @@ def practice_session(student_id):
         print(f"Correct answer: {problem_data['answer']}")
 
     log_gap(student_id, topic, judgment["correct"], problem_data.get("difficulty", "medium"))
-    print(f"Logged to {db.DB_FILE}")
+    print(f"Logged to {GAPS_FILE}")
 
 
 if __name__ == "__main__":
