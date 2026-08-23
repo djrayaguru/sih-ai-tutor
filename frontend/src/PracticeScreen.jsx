@@ -1,10 +1,10 @@
 import { useState } from 'react'
 import './App.css'
 
-const practiceQuestions = [
-  { topic: 'Recursion', question: 'What happens if a recursive function has no base case?', options: ['It runs once and stops', 'It runs forever until the program crashes', 'It automatically returns 0', 'It skips to the next function'], correctIndex: 1, explanation: 'Without a base case, the function keeps calling itself with no stopping point, eventually causing a stack overflow.' },
-  { topic: 'Linked List', question: 'What does each node in a linked list contain?', options: ['Only data', 'Only a pointer to the next node', 'Data and a pointer to the next node', 'A fixed array index'], correctIndex: 2, explanation: 'Each node stores its own data plus a reference (pointer) to the next node in the sequence.' },
-  { topic: 'Binary Search', question: 'What is required for binary search to work correctly?', options: ['The list must be sorted', 'The list must be unsorted', 'The list must contain only numbers', 'The list must have an even number of elements'], correctIndex: 0, explanation: 'Binary search relies on repeatedly halving a sorted list — it does not work correctly on unsorted data.' }
+const TOPICS = [
+  { key: 'linear equation', label: 'Linear Equations' },
+  { key: 'binomial theorem', label: 'Binomial Theorem' },
+  { key: 'probability', label: 'Probability' }
 ]
 
 function logAttempt(topic, correct, question) {
@@ -14,82 +14,126 @@ function logAttempt(topic, correct, question) {
 }
 
 function PracticeScreen() {
-  const [currentIndex, setCurrentIndex] = useState(0)
-  const [selectedOption, setSelectedOption] = useState(null)
-  const [showFeedback, setShowFeedback] = useState(false)
-  const [weakTopics, setWeakTopics] = useState([])
-  const [finished, setFinished] = useState(false)
+  const [topic, setTopic] = useState(null)
+  const [problem, setProblem] = useState(null)
+  const [loading, setLoading] = useState(false)
+  const [answer, setAnswer] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+  const [feedback, setFeedback] = useState(null)
+  const [errorMsg, setErrorMsg] = useState(null)
 
-  const current = practiceQuestions[currentIndex]
-
-  function handleSelect(index) {
-    if (showFeedback) return
-    setSelectedOption(index)
-    setShowFeedback(true)
-    const isCorrect = index === current.correctIndex
-    logAttempt(current.topic, isCorrect, current.question)
-    if (!isCorrect) {
-      setWeakTopics(prev => [...prev, current.topic])
+  async function fetchProblem(t) {
+    setLoading(true)
+    setFeedback(null)
+    setAnswer('')
+    setErrorMsg(null)
+    try {
+      const res = await fetch('http://localhost:8000/api/practice/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ topic: t })
+      })
+      const data = await res.json()
+      if (data.error) {
+        setErrorMsg(data.error)
+        setProblem(null)
+      } else {
+        setProblem(data)
+      }
+    } catch  {
+      setErrorMsg("Couldn't reach the tutor server. Make sure it's running.")
+      setProblem(null)
     }
+    setLoading(false)
   }
 
-  function handleNext() {
-    if (currentIndex + 1 < practiceQuestions.length) {
-      setCurrentIndex(currentIndex + 1)
-      setSelectedOption(null)
-      setShowFeedback(false)
-    } else {
-      setFinished(true)
+  function handleSelectTopic(t) {
+    setTopic(t)
+    fetchProblem(t)
+  }
+
+  function handleChangeTopic() {
+    setTopic(null)
+    setProblem(null)
+    setFeedback(null)
+    setErrorMsg(null)
+  }
+
+  async function handleSubmit() {
+    if (!answer.trim() || !problem) return
+    setSubmitting(true)
+    try {
+      const res = await fetch('http://localhost:8000/api/practice/judge', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ problem_id: problem.problem_id, student_answer: answer })
+      })
+      const data = await res.json()
+      if (data.error) {
+        setErrorMsg(data.error)
+      } else {
+        logAttempt(topic, data.correct, problem.problem)
+        setFeedback(data)
+      }
+    } catch {
+      setErrorMsg("Couldn't reach the tutor server to check your answer.")
     }
+    setSubmitting(false)
   }
 
-  function handleRestart() {
-    setCurrentIndex(0)
-    setSelectedOption(null)
-    setShowFeedback(false)
-    setWeakTopics([])
-    setFinished(false)
-  }
-
-  if (finished) {
-    const correctCount = practiceQuestions.length - new Set(weakTopics).size
+  // Topic picker
+  if (!topic) {
     return (
       <div className="practice-container">
-        <h2>Session complete</h2>
-        <p>You got {correctCount} out of {practiceQuestions.length} correct.</p>
-        {weakTopics.length > 0 ? (
-          <div>
-            <p>Topics to review:</p>
-            <ul>{[...new Set(weakTopics)].map(topic => <li key={topic}>{topic}</li>)}</ul>
-          </div>
-        ) : (
-          <p>No weak spots detected — great job!</p>
-        )}
-        <button onClick={handleRestart}>Try again</button>
+        <h3>What do you want to practice?</h3>
+        <div className="topic-picker">
+          {TOPICS.map(t => (
+            <button key={t.key} className="topic-picker-btn" onClick={() => handleSelectTopic(t.key)}>{t.label}</button>
+          ))}
+        </div>
       </div>
     )
   }
 
   return (
     <div className="practice-container">
-      <div className="practice-progress">Question {currentIndex + 1} of {practiceQuestions.length}</div>
-      <h3>{current.question}</h3>
-      <div className="options">
-        {current.options.map((option, index) => {
-          let optionClass = 'option'
-          if (showFeedback) {
-            if (index === current.correctIndex) optionClass += ' correct'
-            else if (index === selectedOption) optionClass += ' wrong'
-          }
-          return <button key={index} className={optionClass} onClick={() => handleSelect(index)}>{option}</button>
-        })}
-      </div>
-      {showFeedback && (
-        <div className="feedback">
-          <p>{selectedOption === current.correctIndex ? '✅ Correct!' : '❌ Not quite.'}</p>
-          <p>{current.explanation}</p>
-          <button onClick={handleNext}>{currentIndex + 1 < practiceQuestions.length ? 'Next question' : 'See results'}</button>
+      <button className="change-topic-link" onClick={handleChangeTopic}>← Choose a different topic</button>
+
+      {loading && <p className="practice-progress">Generating a question...</p>}
+
+      {errorMsg && (
+        <div className="feedback wrong">
+          <p>{errorMsg}</p>
+          <button onClick={() => fetchProblem(topic)}>Try again</button>
         </div>
+      )}
+
+      {problem && !loading && (
+        <>
+          <div className="quiz-level-tag">{problem.difficulty?.toUpperCase()}</div>
+          <h3>{problem.problem}</h3>
+
+          {!feedback ? (
+            <div className="quiz-answer-row">
+              <input
+                type="text"
+                placeholder="Type your answer..."
+                value={answer}
+                onChange={(e) => setAnswer(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && handleSubmit()}
+                disabled={submitting}
+              />
+              <button onClick={handleSubmit} disabled={submitting}>{submitting ? 'Checking...' : 'Submit'}</button>
+            </div>
+          ) : (
+            <div className={`feedback ${feedback.correct ? 'correct' : 'wrong'}`}>
+              <p>{feedback.correct ? '✅ Correct!' : '❌ Not quite.'}</p>
+              <p>{feedback.feedback}</p>
+              {!feedback.correct && <p><strong>Correct answer:</strong> {feedback.correct_answer}</p>}
+              <button onClick={() => fetchProblem(topic)}>Next question</button>
+            </div>
+          )}
+        </>
       )}
     </div>
   )

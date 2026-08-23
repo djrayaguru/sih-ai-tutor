@@ -46,7 +46,7 @@ function App() {
               <span className="material-symbols-outlined text-primary text-xl">smart_toy</span>
             </div>
             <div className="hidden sm:block leading-tight">
-              <h2 className="text-title-md font-title-md font-bold text-primary m-0">AI Tutor</h2>
+              <h2 className="text-title-md font-title-md font-bold text-primary m-0">Concepta</h2>
               <p className="text-label-md font-label-md text-on-surface-variant font-normal m-0">Your Learning Co-pilot</p>
             </div>
           </div>
