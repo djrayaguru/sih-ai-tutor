@@ -8,6 +8,17 @@ import './App.css'
 
 const KNOWN_TOPICS = ['linear equation', 'binomial theorem', 'probability']
 
+function getStudentId() {
+  const user = JSON.parse(localStorage.getItem('tutor-user') || 'null')
+  if (user?.email) return user.email
+  let anonId = localStorage.getItem('tutor-anon-id')
+  if (!anonId) {
+    anonId = 'anon-' + Math.random().toString(36).slice(2) + Date.now()
+    localStorage.setItem('tutor-anon-id', anonId)
+  }
+  return anonId
+}
+
 function createEmptySession() {
   return {
     id: Date.now(),
@@ -89,7 +100,7 @@ function ChatScreen() {
       const res = await fetch('http://localhost:8000/api/practice/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ topic })
+        body: JSON.stringify({ topic, student_id: getStudentId() })
       })
       const data = await res.json()
       if (data.error) {
@@ -99,7 +110,7 @@ function ChatScreen() {
       updateActiveMessages(msgs => [...msgs.filter(m => m.type !== 'quiz-generating'), {
         sender: 'bot', type: 'quiz-open', problem_id: data.problem_id, problem: data.problem, topic: data.topic, difficulty: data.difficulty, answered: false
       }])
-    } catch  {
+    } catch {
       updateActiveMessages(msgs => [...msgs.filter(m => m.type !== 'quiz-generating'), { sender: 'bot', type: 'refusal', text: "Couldn't reach the tutor server to generate a question." }])
     }
   }
@@ -119,7 +130,7 @@ function ChatScreen() {
       const res = await fetch('http://localhost:8000/api/practice/judge', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ problem_id: msg.problem_id, student_answer: answer })
+        body: JSON.stringify({ problem_id: msg.problem_id, student_answer: answer, student_id: getStudentId() })
       })
       const data = await res.json()
 
@@ -132,7 +143,7 @@ function ChatScreen() {
       updateActiveMessages(msgs => msgs.map((m, i) => i === messageIndex ? {
         ...m, submitting: false, answered: true, correct: data.correct, feedback: data.feedback, correctAnswer: data.correct_answer
       } : m))
-    } catch  {
+    } catch {
       updateActiveMessages(msgs => msgs.map((m, i) => i === messageIndex ? { ...m, submitting: false } : m))
     }
   }

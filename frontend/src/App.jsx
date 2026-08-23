@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import ChatScreen from './ChatScreen'
 import PracticeScreen from './PracticeScreen'
 import DashboardScreen from './DashboardScreen'
@@ -22,6 +22,17 @@ function App() {
   })
   const [showLoginModal, setShowLoginModal] = useState(false)
   const [showProfileMenu, setShowProfileMenu] = useState(false)
+  const [pendingChatQuestion, setPendingChatQuestion] = useState(null)
+  const [theme, setTheme] = useState(() => localStorage.getItem('tutor-theme') || 'light')
+
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', theme)
+    localStorage.setItem('tutor-theme', theme)
+  }, [theme])
+
+  function toggleTheme() {
+    setTheme(prev => (prev === 'light' ? 'dark' : 'light'))
+  }
 
   function handleLogin(userData) {
     setUser(userData)
@@ -34,6 +45,11 @@ function App() {
     setShowProfileMenu(false)
     localStorage.removeItem('tutor-user')
     setActiveTab('home')
+  }
+
+  function handleAskPrerequisite(topic) {
+    setPendingChatQuestion(`Can you explain ${topic}?`)
+    setActiveTab('chat')
   }
 
   return (
@@ -57,7 +73,7 @@ function App() {
                 key={item.id}
                 onClick={() => setActiveTab(item.id)}
                 className={activeTab === item.id
-                  ? 'flex items-center gap-2 px-3 py-2 bg-white text-primary rounded-lg font-bold text-label-md shadow-sm transition-all'
+                  ? 'flex items-center gap-2 px-3 py-2 bg-surface-container-lowest text-primary rounded-lg font-bold text-label-md shadow-sm transition-all'
                   : 'flex items-center gap-2 px-3 py-2 text-on-surface-variant hover:text-primary rounded-lg text-label-md transition-colors'}
               >
                 <span className="material-symbols-outlined text-lg">{item.icon}</span>
@@ -72,6 +88,9 @@ function App() {
               className="hidden lg:inline-flex bg-primary text-on-primary text-label-md font-label-md rounded-xl py-2 px-4 mr-1 hover:bg-primary-container transition-all hover:-translate-y-0.5 shadow-sm"
             >
               Start Review
+            </button>
+            <button className="theme-toggle-btn p-2 text-on-surface-variant hover:bg-surface-container rounded-full transition-all" onClick={toggleTheme}>
+              <span className="material-symbols-outlined">{theme === 'dark' ? 'light_mode' : 'dark_mode'}</span>
             </button>
             <button className="p-2 text-on-surface-variant hover:bg-surface-container rounded-full transition-all">
               <span className="material-symbols-outlined">notifications</span>
@@ -105,7 +124,7 @@ function App() {
       <main className="flex-1 overflow-y-auto p-margin-mobile md:p-margin-desktop w-full max-w-[1280px] mx-auto pb-24 md:pb-margin-desktop">
         {activeTab === 'home' && (
           <div className="grid grid-cols-1 md:grid-cols-12 gap-gutter">
-            <div className="col-span-1 md:col-span-12 bg-white rounded-2xl p-md md:p-lg shadow-[0px_4px_12px_rgba(79,70,229,0.04)] border border-surface-container flex flex-col md:flex-row items-center justify-between gap-md relative overflow-hidden">
+            <div className="col-span-1 md:col-span-12 bg-surface-container-lowest rounded-2xl p-md md:p-lg shadow-[0px_4px_12px_rgba(79,70,229,0.04)] border border-surface-container flex flex-col md:flex-row items-center justify-between gap-md relative overflow-hidden">
               <div className="absolute right-0 top-0 w-1/3 h-full opacity-10 bg-gradient-to-l from-primary to-transparent pointer-events-none"></div>
               <div className="relative z-10 w-full md:w-2/3">
                 <h2 className="text-headline-lg font-headline-lg text-on-surface mb-2">
@@ -126,8 +145,8 @@ function App() {
           </div>
         )}
 
-        {activeTab === 'chat' && <ChatScreen />}
-        {activeTab === 'practice' && <PracticeScreen />}
+        {activeTab === 'chat' && <ChatScreen pendingQuestion={pendingChatQuestion} onConsumePending={() => setPendingChatQuestion(null)} />}
+        {activeTab === 'practice' && <PracticeScreen onAskPrerequisite={handleAskPrerequisite} />}
         {activeTab === 'dashboard' && <DashboardScreen />}
         {activeTab === 'insights' && <ConceptInsightsScreen />}
       </main>

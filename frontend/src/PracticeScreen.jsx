@@ -7,6 +7,17 @@ const TOPICS = [
   { key: 'probability', label: 'Probability' }
 ]
 
+function getStudentId() {
+  const user = JSON.parse(localStorage.getItem('tutor-user') || 'null')
+  if (user?.email) return user.email
+  let anonId = localStorage.getItem('tutor-anon-id')
+  if (!anonId) {
+    anonId = 'anon-' + Math.random().toString(36).slice(2) + Date.now()
+    localStorage.setItem('tutor-anon-id', anonId)
+  }
+  return anonId
+}
+
 function logAttempt(topic, correct, question) {
   const existing = JSON.parse(localStorage.getItem('student-progress-log') || '[]')
   existing.push({ topic, correct, question, timestamp: Date.now() })
@@ -31,7 +42,7 @@ function PracticeScreen() {
       const res = await fetch('http://localhost:8000/api/practice/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ topic: t })
+        body: JSON.stringify({ topic: t, student_id: getStudentId() })
       })
       const data = await res.json()
       if (data.error) {
@@ -40,7 +51,7 @@ function PracticeScreen() {
       } else {
         setProblem(data)
       }
-    } catch  {
+    } catch {
       setErrorMsg("Couldn't reach the tutor server. Make sure it's running.")
       setProblem(null)
     }
@@ -66,7 +77,7 @@ function PracticeScreen() {
       const res = await fetch('http://localhost:8000/api/practice/judge', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ problem_id: problem.problem_id, student_answer: answer })
+        body: JSON.stringify({ problem_id: problem.problem_id, student_answer: answer, student_id: getStudentId() })
       })
       const data = await res.json()
       if (data.error) {
@@ -81,7 +92,6 @@ function PracticeScreen() {
     setSubmitting(false)
   }
 
-  // Topic picker
   if (!topic) {
     return (
       <div className="practice-container">

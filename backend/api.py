@@ -3,22 +3,24 @@ os.environ["HF_HUB_OFFLINE"] = "1"
 
 import json
 import re
+import time
 import uuid
-from datetime import datetime
 
 import faiss
 from sentence_transformers import SentenceTransformer
 import google.generativeai as genai
+from google.api_core.exceptions import ResourceExhausted
 from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
+import db
+
 load_dotenv()
 genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 
 CONFIDENCE_THRESHOLD = 0.3
-GAPS_FILE = "gaps.json"
 
 print("Loading chunks and index...")
 with open("chunks.json", "r", encoding="utf-8") as f:
@@ -31,10 +33,29 @@ llm = genai.GenerativeModel("gemini-3.6-flash")
 app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
+    allow_origin_regex=r"http://(localhost|127\.0\.0\.1):\d+",
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+def safe_generate(prompt, max_retries=5, base_delay=8):
+    delay = base_delay
+    for attempt in range(max_retries):
+        try:
+            return llm.generate_content(prompt)
+        except ResourceExhausted as e:
+            if "PerDay" in str(e):
+                raise RuntimeError(
+                    "Gemini free-tier DAILY quota exhausted. Resets ~24h after your first "
+                    "call today. Enable billing on your Google AI Studio project, or wait."
+                ) from e
+            if attempt == max_retries - 1:
+                raise
+            print(f"[Rate limit hit — waiting {delay}s before retry {attempt + 1}/{max_retries}]")
+            time.sleep(delay)
+            delay *= 2
+
 
 def retrieve(query, top_k=3):
     query_vec = embed_model.encode([query], convert_to_numpy=True)
@@ -42,12 +63,15 @@ def retrieve(query, top_k=3):
     scores, indices = index.search(query_vec, top_k)
     return [{**chunks[idx], "score": float(score)} for score, idx in zip(scores[0], indices[0])]
 
+
 def extract_json(text):
     text = re.sub(r"^```json\s*|\s*```$", "", text.strip())
     return json.loads(text)
 
+
 def normalize_topic(topic):
     return set(re.findall(r"[a-z0-9]+", topic.lower()))
+
 
 def topics_match(topic_a, topic_b):
     words_a, words_b = normalize_topic(topic_a), normalize_topic(topic_b)
@@ -56,12 +80,10 @@ def topics_match(topic_a, topic_b):
     overlap = words_a & words_b
     return len(overlap) / min(len(words_a), len(words_b)) >= 0.5
 
-def get_difficulty(topic):
-    if not os.path.exists(GAPS_FILE):
-        return "medium"
-    with open(GAPS_FILE, "r") as f:
-        gaps = json.load(f)
-    topic_attempts = [g for g in gaps if topics_match(g["topic"], topic)]
+
+def get_difficulty(student_id, topic):
+    student_attempts = db.get_attempts_for_student(student_id)
+    topic_attempts = [g for g in student_attempts if topics_match(g["topic"], topic)]
     if not topic_attempts:
         return "medium"
     accuracy = sum(1 for g in topic_attempts if g["correct"]) / len(topic_attempts)
@@ -71,21 +93,14 @@ def get_difficulty(topic):
         return "easy"
     return "medium"
 
-def log_gap(topic, correct, difficulty):
-    gaps = []
-    if os.path.exists(GAPS_FILE):
-        with open(GAPS_FILE, "r") as f:
-            gaps = json.load(f)
-    gaps.append({"topic": topic, "correct": correct, "difficulty": difficulty, "timestamp": datetime.now().isoformat()})
-    with open(GAPS_FILE, "w") as f:
-        json.dump(gaps, f, indent=2)
 
-# in-memory store for problems awaiting judging — fine for a hackathon demo
 active_problems = {}
 asked_problems_by_topic = {}
 
+
 class AskRequest(BaseModel):
     query: str
+
 
 @app.post("/api/ask")
 def ask(req: AskRequest):
@@ -97,14 +112,22 @@ def ask(req: AskRequest):
 
     context = "\n\n---\n\n".join(f"[Source: {r['source_file']}, page {r['page']}]\n{r['text']}" for r in results)
 
-    prompt = f"""You are a tutor. Format ALL mathematical notation using LaTeX wrapped in dollar signs (e.g. $\\frac{{A}}{{B}}$, $x^2$, $\\binom{{n}}{{r}}$) — never write math as plain text without dollar-sign delimiters.
+    prompt = f"""You are a patient, encouraging tutor — not a search engine. Your job is to make the student genuinely UNDERSTAND the concept, not to recite the textbook at them.
 
-Using ONLY the context below, respond to the student's question:
-- If the student is asking you to SOLVE a specific problem and get a final numeric/algebraic answer: do NOT give the final answer. Explain the method and steps only, walk through their exact problem as the example, stop right before the final step, and encourage them to try it themselves.
-- If the student is asking to UNDERSTAND a concept, method, or definition: answer it directly and clearly.
+Format ALL mathematical notation using LaTeX wrapped in dollar signs (e.g. $\\frac{{A}}{{B}}$, $x^2$, $\\binom{{n}}{{r}}$) — never write math as plain text without dollar-sign delimiters.
+
+Ground every fact ONLY in the context below — never use outside knowledge. But teach it in YOUR OWN words:
+- Do NOT copy sentences or phrasing directly from the context — explain it like you're talking to a student, not quoting a book.
+- Start with the intuition or a simple, everyday-language explanation before any formal definition or formula.
+- Use a short concrete example to make it click.
+- Keep it conversational, like a tutor explaining at a whiteboard, not a textbook excerpt.
+
+Respond to the student's question:
+- If they're asking you to SOLVE a specific problem and get a final numeric/algebraic answer: do NOT give the final answer. Explain the method and steps only, walk through their exact problem as the example, stop right before the final step, and encourage them to try it themselves.
+- If they're asking to UNDERSTAND a concept, method, or definition: teach it properly using the approach above.
 - If the context does not contain enough information to answer, say so clearly — do not guess.
 
-Always mention which page number(s) your answer comes from.
+Always mention which page number(s) your explanation is grounded in.
 
 Context:
 {context}
@@ -113,12 +136,14 @@ Student question: {req.query}
 
 Your response:"""
 
-    response = llm.generate_content(prompt)
+    response = safe_generate(prompt)
     return {"refused": False, "answer": response.text, "sources": [{"source_file": r["source_file"], "page": r["page"]} for r in results]}
 
 
 class GenerateRequest(BaseModel):
     topic: str
+    student_id: str
+
 
 @app.post("/api/practice/generate")
 def generate_problem_endpoint(req: GenerateRequest):
@@ -126,10 +151,11 @@ def generate_problem_endpoint(req: GenerateRequest):
     if results[0]["score"] < CONFIDENCE_THRESHOLD:
         return {"error": "Not enough material on this topic to generate a practice problem."}
 
-    difficulty = get_difficulty(req.topic)
+    difficulty = get_difficulty(req.student_id, req.topic)
     context = "\n\n".join(r["text"] for r in results)
 
-    previously_asked = asked_problems_by_topic.get(req.topic, [])
+    dedup_key = (req.student_id, req.topic)
+    previously_asked = asked_problems_by_topic.get(dedup_key, [])
     avoid_block = ""
     if previously_asked:
         avoid_list = "\n".join(f"- {q}" for q in previously_asked[-5:])
@@ -146,19 +172,19 @@ Respond with ONLY valid JSON: {{"problem": "the question text", "answer": "the c
 
     generation_config = {"temperature": 0.9}
 
-    raw_response = llm.generate_content(prompt, generation_config=generation_config).text
     try:
+        raw_response = safe_generate(prompt).text
         data = extract_json(raw_response)
     except Exception as e:
-        print(f"[generate_problem] JSON parse failed: {e}\nRaw response: {raw_response}")
+        print(f"[generate_problem] JSON parse failed: {e}")
         try:
-            raw_response = llm.generate_content(prompt, generation_config=generation_config).text
+            raw_response = safe_generate(prompt).text
             data = extract_json(raw_response)
         except Exception as e2:
-            print(f"[generate_problem] Retry also failed: {e2}\nRaw response: {raw_response}")
+            print(f"[generate_problem] Retry also failed: {e2}")
             return {"error": "Could not generate a problem right now — try again."}
 
-    asked_problems_by_topic.setdefault(req.topic, []).append(data["problem"])
+    asked_problems_by_topic.setdefault(dedup_key, []).append(data["problem"])
 
     problem_id = str(uuid.uuid4())
     active_problems[problem_id] = data
@@ -168,6 +194,8 @@ Respond with ONLY valid JSON: {{"problem": "the question text", "answer": "the c
 class JudgeRequest(BaseModel):
     problem_id: str
     student_answer: str
+    student_id: str
+
 
 @app.post("/api/practice/judge")
 def judge_answer_endpoint(req: JudgeRequest):
@@ -179,24 +207,25 @@ def judge_answer_endpoint(req: JudgeRequest):
 Correct answer: {problem_data['answer']}
 Student's answer: {req.student_answer}
 
-Judge if correct, accepting equivalent forms. Respond with ONLY valid JSON:
+Judge if correct, accepting equivalent forms: different notation, simplified vs unsimplified,
+with/without units if implied, and different letter casing (e.g. treat "a" and "A" as the same variable).
+Respond with ONLY valid JSON:
 {{"correct": true or false, "feedback": "one short sentence"}}"""
 
     try:
-        judgment = extract_json(llm.generate_content(prompt).text)
-    except Exception:
+        judgment = extract_json(safe_generate(prompt).text)
+    except Exception as e:
+        print(f"[judge_answer] JSON parse failed: {e}")
         judgment = {"correct": False, "feedback": "Could not evaluate answer."}
 
-    log_gap(problem_data["topic"], judgment["correct"], problem_data.get("difficulty", "medium"))
+    db.log_gap(req.student_id, problem_data["topic"], judgment["correct"], problem_data.get("difficulty", "medium"))
     del active_problems[req.problem_id]
     return {"correct": judgment["correct"], "feedback": judgment["feedback"], "correct_answer": problem_data["answer"]}
 
+
 @app.get("/api/insights")
 def get_insights():
-    if not os.path.exists(GAPS_FILE):
-        return {"topics": [], "total_attempts": 0}
-    with open(GAPS_FILE, "r") as f:
-        gaps = json.load(f)
+    gaps = db.get_all_attempts()
     if not gaps:
         return {"topics": [], "total_attempts": 0}
 
