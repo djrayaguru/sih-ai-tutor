@@ -94,50 +94,135 @@ def get_difficulty(student_id, topic):
     return "medium"
 
 
+def find_followup_target(student_id, new_query):
+    history = db.get_conversation_history(student_id)
+    if not history:
+        return None
+
+    history_list = "\n".join(f"{i}: {entry['query']}" for i, entry in enumerate(history))
+
+    prompt = f"""Here is the list of questions asked so far in this session, in order:
+{history_list}
+
+The student's NEW message is: "{new_query}"
+
+Does this new message refer back to one of the earlier questions (e.g. "explain that again",
+"go back to what you said about X") — even if other topics came in between?
+
+If yes, respond with ONLY the number of the question it refers to (e.g. "2").
+If no, respond with ONLY the word: new"""
+
+    result = safe_generate(prompt).text.strip().lower()
+    if result == "new" or not result.isdigit():
+        return None
+    index_ = int(result)
+    return history[index_] if 0 <= index_ < len(history) else None
+
+def build_concept_prompt(query, context, previous_explanation=None):
+    base_instructions = """You are a warm, enthusiastic tutor who genuinely loves helping students have
+"aha" moments. Answer the student's question using ONLY the concepts and facts in the context
+below — do not use outside knowledge.
+
+Format ALL mathematical notation using LaTeX wrapped in dollar signs (e.g. $\\frac{{A}}{{B}}$, $x^2$).
+
+Teach like a real tutor sitting next to the student, not a textbook:
+1. Open with a relatable, everyday analogy or a one-line reason this concept actually matters.
+2. Give a simple, plain-language explanation of the idea.
+3. Break down any formula or definition piece by piece.
+4. Walk through one concrete worked example, step by step, thinking out loud.
+5. If the context includes a common mix-up or edge case, mention it briefly and warmly.
+6. End by asking: "Did that make sense?"
+
+Keep the tone encouraging and human. Do not just copy the textbook's wording."""
+
+    if previous_explanation:
+        base_instructions += f"""
+
+IMPORTANT: The student did NOT understand your previous explanation, quoted below. Explain this
+concept in a genuinely DIFFERENT way this time — different analogy, different starting point,
+or a different worked example.
+
+Your previous explanation:
+\"\"\"{previous_explanation}\"\"\""""
+
+    return f"""{base_instructions}
+
+If the context does not contain enough information, say so clearly.
+Always mention which page number(s) your explanation comes from.
+
+Context:
+{context}
+
+Student question: {query}
+
+Answer:"""
+
+
 active_problems = {}
 asked_problems_by_topic = {}
 
 
 class AskRequest(BaseModel):
     query: str
+    student_id: str
 
 
 @app.post("/api/ask")
 def ask(req: AskRequest):
-    results = retrieve(req.query)
-    top_score = results[0]["score"]
+    target = find_followup_target(req.student_id, req.query)
 
-    if top_score < CONFIDENCE_THRESHOLD:
-        return {"refused": True, "answer": "I don't have enough information in the provided materials to answer that.", "sources": []}
+    if target:
+        context = target["context"]
+        effective_query = target["query"]
+        previous_explanation = target["explanation"]
+        is_followup = True
+    else:
+        results = retrieve(req.query)
+        top_score = results[0]["score"]
 
-    context = "\n\n---\n\n".join(f"[Source: {r['source_file']}, page {r['page']}]\n{r['text']}" for r in results)
+        if top_score < CONFIDENCE_THRESHOLD:
+            return {"refused": True, "answer": "I don't have enough information in the provided materials to answer that.", "sources": []}
 
-    prompt = f"""You are a patient, encouraging tutor — not a search engine. Your job is to make the student genuinely UNDERSTAND the concept, not to recite the textbook at them.
+        context = "\n\n---\n\n".join(f"[Source: {r['source_file']}, page {r['page']}]\n{r['text']}" for r in results)
+        effective_query = req.query
+        previous_explanation = None
+        is_followup = False
 
-Format ALL mathematical notation using LaTeX wrapped in dollar signs (e.g. $\\frac{{A}}{{B}}$, $x^2$, $\\binom{{n}}{{r}}$) — never write math as plain text without dollar-sign delimiters.
-
-Ground every fact ONLY in the context below — never use outside knowledge. But teach it in YOUR OWN words:
-- Do NOT copy sentences or phrasing directly from the context — explain it like you're talking to a student, not quoting a book.
-- Start with the intuition or a simple, everyday-language explanation before any formal definition or formula.
-- Use a short concrete example to make it click.
-- Keep it conversational, like a tutor explaining at a whiteboard, not a textbook excerpt.
-
-Respond to the student's question:
-- If they're asking you to SOLVE a specific problem and get a final numeric/algebraic answer: do NOT give the final answer. Explain the method and steps only, walk through their exact problem as the example, stop right before the final step, and encourage them to try it themselves.
-- If they're asking to UNDERSTAND a concept, method, or definition: teach it properly using the approach above.
-- If the context does not contain enough information to answer, say so clearly — do not guess.
-
-Always mention which page number(s) your explanation is grounded in.
-
-Context:
-{context}
-
-Student question: {req.query}
-
-Your response:"""
-
+    prompt = build_concept_prompt(effective_query, context, previous_explanation)
     response = safe_generate(prompt)
-    return {"refused": False, "answer": response.text, "sources": [{"source_file": r["source_file"], "page": r["page"]} for r in results]}
+
+    db.log_conversation(req.student_id, effective_query, context, response.text)
+
+    return {
+        "refused": False,
+        "answer": response.text,
+        "is_followup": is_followup,
+        "awaiting_feedback": True
+    }
+
+
+class FeedbackRequest(BaseModel):
+    student_id: str
+    understood: bool
+
+
+@app.post("/api/ask/feedback")
+def ask_feedback(req: FeedbackRequest):
+    history = db.get_conversation_history(req.student_id)
+    if not history:
+        return {"error": "No active question to give feedback on."}
+
+    last = history[-1]
+
+    if req.understood:
+        return {"message": "Awesome! Glad that clicked. 🎉"}
+
+    prompt = build_concept_prompt(last["query"], last["context"], last["explanation"])
+    response = safe_generate(prompt)
+
+    db.log_conversation(req.student_id, last["query"], last["context"], response.text)
+
+    return {"answer": response.text, "awaiting_feedback": True}
 
 
 class GenerateRequest(BaseModel):
@@ -169,8 +254,6 @@ Context:
 {context}
 
 Respond with ONLY valid JSON: {{"problem": "the question text", "answer": "the correct answer", "topic": "{req.topic}", "difficulty": "{difficulty}"}}"""
-
-    generation_config = {"temperature": 0.9}
 
     try:
         raw_response = safe_generate(prompt).text

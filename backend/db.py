@@ -1,5 +1,5 @@
 """
-SQLite storage for student practice attempts — replaces gaps.json.
+SQLite storage for student practice attempts and tutor conversation history.
 
 Still just a single file (gaps.db) sitting in the backend folder, no server
 to install or configure. What changes vs. flat JSON:
@@ -28,6 +28,16 @@ def init_db():
             topic TEXT NOT NULL,
             correct INTEGER NOT NULL,
             difficulty TEXT NOT NULL,
+            timestamp TEXT NOT NULL
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS conversations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            student_id TEXT NOT NULL,
+            query TEXT NOT NULL,
+            context TEXT NOT NULL,
+            explanation TEXT NOT NULL,
             timestamp TEXT NOT NULL
         )
     """)
@@ -61,6 +71,35 @@ def get_all_attempts():
     return [dict(r) for r in rows]
 
 
-# Ensures the table exists the moment this module is imported anywhere,
+def log_conversation(student_id, query, context, explanation):
+    conn = get_connection()
+    conn.execute(
+        "INSERT INTO conversations (student_id, query, context, explanation, timestamp) VALUES (?, ?, ?, ?, ?)",
+        (student_id, query, context, explanation, datetime.now().isoformat())
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_conversation_history(student_id):
+    conn = get_connection()
+    rows = conn.execute(
+        "SELECT * FROM conversations WHERE student_id = ? ORDER BY id ASC",
+        (student_id,)
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def clear_conversation_history(student_id):
+    """Optional: lets a student/frontend explicitly start a fresh session without old topics
+    being eligible as follow-up targets forever."""
+    conn = get_connection()
+    conn.execute("DELETE FROM conversations WHERE student_id = ?", (student_id,))
+    conn.commit()
+    conn.close()
+
+
+# Ensures the tables exist the moment this module is imported anywhere,
 # so nobody has to remember a separate setup step.
 init_db()
