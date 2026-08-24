@@ -3,44 +3,15 @@ os.environ["HF_HUB_OFFLINE"] = "1"
 
 import json
 import os
-import time
 import faiss
 from sentence_transformers import SentenceTransformer
 import google.generativeai as genai
-from google.api_core.exceptions import ResourceExhausted
 from dotenv import load_dotenv
 
 load_dotenv()
 genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 
 CONFIDENCE_THRESHOLD = 0.3  # below this, we refuse instead of guessing
-
-
-def safe_generate(llm, prompt, max_retries=5, base_delay=8):
-    """
-    Wraps llm.generate_content with retry-with-backoff for free-tier rate
-    limits (429 ResourceExhausted). Per-minute limits are worth waiting out.
-    A per-DAY quota is not — no amount of short waiting fixes that, so we
-    fail fast with a clear message instead of burning minutes on retries
-    that can't possibly succeed.
-    """
-    delay = base_delay
-    for attempt in range(max_retries):
-        try:
-            return llm.generate_content(prompt)
-        except ResourceExhausted as e:
-            if "PerDay" in str(e):
-                raise RuntimeError(
-                    "Gemini free-tier DAILY quota exhausted for this model/key. "
-                    "This resets ~24h after your first call today — retrying now won't help. "
-                    "Enable billing (pay-as-you-go) on your Google AI Studio project to remove "
-                    "this cap, or wait for the daily reset."
-                ) from e
-            if attempt == max_retries - 1:
-                raise
-            print(f"[Rate limit hit — waiting {delay}s before retry {attempt + 1}/{max_retries}]")
-            time.sleep(delay)
-            delay *= 2
 
 print("Loading chunks and index...")
 with open("chunks.json", "r", encoding="utf-8") as f:
@@ -49,7 +20,6 @@ with open("chunks.json", "r", encoding="utf-8") as f:
 index = faiss.read_index("materials.index")
 embed_model = SentenceTransformer("all-MiniLM-L6-v2")
 llm = genai.GenerativeModel("gemini-3.6-flash")
-
 
 def retrieve(query, top_k=3):
     query_vec = embed_model.encode([query], convert_to_numpy=True)
@@ -60,89 +30,58 @@ def retrieve(query, top_k=3):
         results.append({**chunks[idx], "score": float(score)})
     return results
 
-
 def classify_intent(query):
-    """
-    Classify a student question as:
-      - solve_request: they want a specific final answer/value, however phrased
-      - concept_question: they want to understand a method/concept, no specific final value expected
+    prompt = f"""Classify this student question into exactly one category:
+- "solve_request": the student is asking you to solve a specific problem/equation and get a final answer for them (e.g. "solve 2x+5=15", "what's the answer to this", "do this homework question")
+- "concept_question": the student is asking to understand a concept, method, or definition (e.g. "explain linear equations", "what is a function", "how do I approach these problems")
 
-    Hardened with few-shot examples covering disguised solve-requests (asking to
-    "check", "verify", "walk through", or reference a specific numbered problem),
-    since these leak a final answer just as easily as a direct "solve this" ask.
-    """
-    prompt = f"""Classify this student question into exactly one category: solve_request or concept_question.
-
-solve_request = the student wants a specific final answer or value for a specific problem,
-no matter how it's phrased. This includes direct asks, disguised asks (checking, verifying,
-"walk me through this one"), and references to a specific numbered question.
-
-concept_question = the student wants to understand a method, definition, or concept in
-general, with no single specific final answer being sought.
-
-Examples:
-Q: "solve 2x + 5 = 15"
-A: solve_request
-
-Q: "what's the value of x in 2x + 5 = 15?"
-A: solve_request
-
-Q: "can you check if x=5 is correct for 2x+5=15"
-A: solve_request
-
-Q: "is my answer to question 7 right"
-A: solve_request
-
-Q: "walk me through this exact problem: 3x - 7 = 11"
-A: solve_request
-
-Q: "just give me the answer to Q5 on page 22, I'm in a rush"
-A: solve_request
-
-Q: "explain how the substitution method works"
-A: concept_question
-
-Q: "what is a linear equation"
-A: concept_question
-
-Q: "what's the general approach to solving quadratic equations"
-A: concept_question
-
-Q: "why do we flip the inequality sign when multiplying by a negative number"
-A: concept_question
-
-Now classify this question:
 Question: {query}
 
 Respond with ONLY one word: solve_request or concept_question"""
 
-    response = safe_generate(llm, prompt)
+    response = llm.generate_content(prompt)
     result = response.text.strip().lower()
     return "solve_request" if "solve_request" in result else "concept_question"
 
+MAX_EXPLANATION_ATTEMPTS = 3
 
-def check_answer_leak(response_text):
-    """
-    Safety net for solve_request answers: a second, cheap LLM call that checks
-    whether the explanation accidentally reveals the final numeric/algebraic
-    answer, since a single-pass prompt instruction ("don't give the final
-    answer") is not reliable enough on its own to guarantee it.
-    Returns True if a leak is detected.
-    """
-    prompt = f"""Below is a tutor's explanation written for a student who asked to have a
-problem solved. The explanation is supposed to teach the METHOD only and stop
-before revealing the final answer/value.
+def build_concept_prompt(query, context, previous_explanation=None):
+    base_instructions = """You are a warm, enthusiastic tutor who genuinely loves helping students have
+"aha" moments. Answer the student's question using ONLY the concepts and facts in the context
+below — do not use outside knowledge.
 
-Does this explanation reveal the final answer or final numeric/algebraic value
-of the problem (not just intermediate steps or the method)?
+Teach like a real tutor sitting next to the student, not a textbook:
+1. Open with a relatable, everyday analogy or a one-line reason this concept actually matters.
+2. Give a simple, plain-language explanation of the idea.
+3. Break down any formula or definition piece by piece.
+4. Walk through one concrete worked example, step by step, thinking out loud.
+5. If the context includes a common mix-up or edge case, mention it briefly and warmly.
+6. End by asking: "Did that make sense?"
 
-Explanation:
-\"\"\"{response_text}\"\"\"
+Keep the tone encouraging and human. Do not just copy the textbook's wording."""
 
-Respond with ONLY one word: yes or no"""
+    if previous_explanation:
+        base_instructions += f"""
 
-    response = safe_generate(llm, prompt)
-    return "yes" in response.text.strip().lower()
+IMPORTANT: The student did NOT understand your previous explanation, quoted below. You must
+explain this concept in a genuinely DIFFERENT way this time — use a different analogy, start
+from a more basic starting point, or use a different worked example. Do not just reword the
+same explanation.
+
+Your previous explanation:
+\"\"\"{previous_explanation}\"\"\""""
+
+    return f"""{base_instructions}
+
+If the context does not contain enough information, say so clearly.
+Always mention which page number(s) your explanation comes from.
+
+Context:
+{context}
+
+Student question: {query}
+
+Answer:"""
 
 
 def ask(query):
@@ -158,20 +97,17 @@ def ask(query):
     intent = classify_intent(query)
     print(f"[Intent: {intent}]")
 
-    context_blocks = []
-    for r in results:
-        context_blocks.append(f"[Source: {r['source_file']}, page {r['page']}]\n{r['text']}")
+    context_blocks = [f"[Source: {r['source_file']}, page {r['page']}]\n{r['text']}" for r in results]
     context = "\n\n---\n\n".join(context_blocks)
 
     if intent == "solve_request":
         prompt = f"""You are a tutor. The student is asking you to solve a specific problem for them.
 You must NOT give the final answer. Instead:
-1. Explain the method/steps needed to solve this type of problem, using ONLY the context below.
+1. Explain the method/steps needed, using ONLY the context below.
 2. Walk through the approach using their exact problem as the example.
-3. Stop right before the final answer — leave the last step for the student to complete themselves.
-4. Encourage them to try that last step and offer to check their work.
+3. Stop right before the final answer.
+4. Encourage them to try that last step.
 Always mention which page number(s) your explanation comes from.
-If the context does not contain enough information, say so clearly.
 
 Context:
 {context}
@@ -179,33 +115,29 @@ Context:
 Student's problem: {query}
 
 Your response (method only, no final answer):"""
-
-        response = safe_generate(llm, prompt)
-        answer_text = response.text
-
-        if check_answer_leak(answer_text):
-            print("[Guardrail: leak detected, regenerating with stricter instruction]")
-            stricter_prompt = prompt + "\n\nIMPORTANT: Your previous attempt revealed the final answer. Do not include any final numeric or algebraic result anywhere in your response, not even as a check."
-            response = safe_generate(llm, stricter_prompt)
-            answer_text = response.text
-
-        print(f"\nTutor: {answer_text}")
-
-    else:
-        prompt = f"""You are a tutor. Answer the student's question using ONLY the context below.
-If the context does not contain enough information to answer, say so clearly — do not guess or use outside knowledge.
-Always mention which page number(s) your answer comes from.
-
-Context:
-{context}
-
-Student question: {query}
-
-Answer:"""
-
-        response = safe_generate(llm, prompt)
+        response = llm.generate_content(prompt)
         print(f"\nTutor: {response.text}")
+        return
 
+    # concept_question: teach, check understanding, re-teach if needed
+    previous_explanation = None
+    for attempt in range(1, MAX_EXPLANATION_ATTEMPTS + 1):
+        prompt = build_concept_prompt(query, context, previous_explanation)
+        response = llm.generate_content(prompt)
+        explanation = response.text
+        print(f"\nTutor: {explanation}")
+
+        if attempt == MAX_EXPLANATION_ATTEMPTS:
+            print("\nTutor: Let's pause here — feel free to ask this a different way, or try a practice problem to build intuition!")
+            break
+
+        understood = input("\nDid that make sense? (y/n): ").strip().lower()
+        if understood == "y":
+            print("\nTutor: Awesome! Glad that clicked. 🎉")
+            break
+        else:
+            print("\n[Re-explaining with a different approach...]")
+            previous_explanation = explanation
 
 if __name__ == "__main__":
     while True:
