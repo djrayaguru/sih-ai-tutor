@@ -47,8 +47,8 @@ def safe_generate(prompt, max_retries=5, base_delay=8):
         except ResourceExhausted as e:
             if "PerDay" in str(e):
                 raise RuntimeError(
-                    "Gemini free-tier DAILY quota exhausted. Resets ~24h after your first "
-                    "call today. Enable billing on your Google AI Studio project, or wait."
+                    "Gemini free-tier DAILY quota exhausted. Resets at midnight Pacific Time "
+                    "(roughly midday IST). Enable billing on your Google AI Studio project, or wait."
                 ) from e
             if attempt == max_retries - 1:
                 raise
@@ -94,6 +94,31 @@ def get_difficulty(student_id, topic):
     return "medium"
 
 
+PREREQUISITE_MAP = {
+    "linear equation": ["solving basic algebraic equations", "plotting points on a coordinate plane"],
+    "binomial theorem": ["exponents and powers", "permutations and combinations (nCr)"],
+    "probability": ["basic fractions and ratios", "counting outcomes"],
+}
+
+
+def is_struggling(student_id, topic):
+    attempts = db.get_attempts_for_student(student_id)
+    topic_attempts = [g for g in attempts if topics_match(g["topic"], topic)]
+    topic_attempts.sort(key=lambda g: g["id"])
+    recent = topic_attempts[-3:]
+    if len(recent) < 2:
+        return False
+    wrong_count = sum(1 for g in recent if not g["correct"])
+    return wrong_count >= 2
+
+
+def get_prerequisite_suggestion(topic):
+    for key, prereqs in PREREQUISITE_MAP.items():
+        if topics_match(key, topic):
+            return prereqs[0]
+    return None
+
+
 def find_followup_target(student_id, new_query):
     history = db.get_conversation_history(student_id)
     if not history:
@@ -118,6 +143,7 @@ If no, respond with ONLY the word: new"""
     index_ = int(result)
     return history[index_] if 0 <= index_ < len(history) else None
 
+
 def build_concept_prompt(query, context, previous_explanation=None):
     base_instructions = """You are a warm, enthusiastic tutor who genuinely loves helping students have
 "aha" moments. Answer the student's question using ONLY the concepts and facts in the context
@@ -125,12 +151,27 @@ below — do not use outside knowledge.
 
 Format ALL mathematical notation using LaTeX wrapped in dollar signs (e.g. $\\frac{{A}}{{B}}$, $x^2$).
 
+FIRST, determine what the student wants:
+- If they are asking you to SOLVE a specific problem and get a final numeric/algebraic answer
+  (however phrased — including "check my answer", "walk me through this one", a specific
+  numbered question): you must NOT give the final answer anywhere in your response. Teach the
+  METHOD only, walk through their exact problem as the example, stop right before the final
+  step, and encourage them to complete that last step themselves.
+- If they are asking to UNDERSTAND a concept, method, or definition in general (no single
+  specific final answer being sought): teach it fully using the approach below.
+
+FORMATTING RULES — this matters a lot, follow it strictly:
+- Use a short markdown header (###) for each major section (e.g. "### The Idea", "### Worked Example", "### Watch Out For").
+- Keep every paragraph to 2-3 sentences MAX. If you have more to say, start a new paragraph or use a bullet list instead.
+- If you're presenting more than one related case or example (like "what if X" / "what if Y"), ALWAYS use a bullet list, one bullet per case — never cram them into one paragraph.
+- Always leave the content feeling spacious and easy to scan, never a dense wall of text.
+
 Teach like a real tutor sitting next to the student, not a textbook:
 1. Open with a relatable, everyday analogy or a one-line reason this concept actually matters.
 2. Give a simple, plain-language explanation of the idea.
 3. Break down any formula or definition piece by piece.
-4. Walk through one concrete worked example, step by step, thinking out loud.
-5. If the context includes a common mix-up or edge case, mention it briefly and warmly.
+4. Walk through one concrete worked example, step by step, thinking out loud (for solve-requests, stop right before the final answer as instructed above).
+5. If the context includes a common mix-up or edge case, mention it briefly and warmly, as a bullet list if there's more than one.
 6. End by asking: "Did that make sense?"
 
 Keep the tone encouraging and human. Do not just copy the textbook's wording."""
@@ -169,36 +210,40 @@ class AskRequest(BaseModel):
 
 @app.post("/api/ask")
 def ask(req: AskRequest):
-    target = find_followup_target(req.student_id, req.query)
+    try:
+        target = find_followup_target(req.student_id, req.query)
 
-    if target:
-        context = target["context"]
-        effective_query = target["query"]
-        previous_explanation = target["explanation"]
-        is_followup = True
-    else:
-        results = retrieve(req.query)
-        top_score = results[0]["score"]
+        if target:
+            context = target["context"]
+            effective_query = target["query"]
+            previous_explanation = target["explanation"]
+            is_followup = True
+        else:
+            results = retrieve(req.query)
+            top_score = results[0]["score"]
 
-        if top_score < CONFIDENCE_THRESHOLD:
-            return {"refused": True, "answer": "I don't have enough information in the provided materials to answer that.", "sources": []}
+            if top_score < CONFIDENCE_THRESHOLD:
+                return {"refused": True, "answer": "I don't have enough information in the provided materials to answer that.", "sources": []}
 
-        context = "\n\n---\n\n".join(f"[Source: {r['source_file']}, page {r['page']}]\n{r['text']}" for r in results)
-        effective_query = req.query
-        previous_explanation = None
-        is_followup = False
+            context = "\n\n---\n\n".join(f"[Source: {r['source_file']}, page {r['page']}]\n{r['text']}" for r in results)
+            effective_query = req.query
+            previous_explanation = None
+            is_followup = False
 
-    prompt = build_concept_prompt(effective_query, context, previous_explanation)
-    response = safe_generate(prompt)
+        prompt = build_concept_prompt(effective_query, context, previous_explanation)
+        response = safe_generate(prompt)
 
-    db.log_conversation(req.student_id, effective_query, context, response.text)
+        db.log_conversation(req.student_id, effective_query, context, response.text)
 
-    return {
-        "refused": False,
-        "answer": response.text,
-        "is_followup": is_followup,
-        "awaiting_feedback": True
-    }
+        return {
+            "refused": False,
+            "answer": response.text,
+            "is_followup": is_followup,
+            "awaiting_feedback": True
+        }
+    except Exception as e:
+        print(f"[/api/ask] failed: {e}")
+        return {"refused": True, "answer": f"⚠️ {e}", "sources": []}
 
 
 class FeedbackRequest(BaseModel):
@@ -217,12 +262,14 @@ def ask_feedback(req: FeedbackRequest):
     if req.understood:
         return {"message": "Awesome! Glad that clicked. 🎉"}
 
-    prompt = build_concept_prompt(last["query"], last["context"], last["explanation"])
-    response = safe_generate(prompt)
-
-    db.log_conversation(req.student_id, last["query"], last["context"], response.text)
-
-    return {"answer": response.text, "awaiting_feedback": True}
+    try:
+        prompt = build_concept_prompt(last["query"], last["context"], last["explanation"])
+        response = safe_generate(prompt)
+        db.log_conversation(req.student_id, last["query"], last["context"], response.text)
+        return {"answer": response.text, "awaiting_feedback": True}
+    except Exception as e:
+        print(f"[/api/ask/feedback] failed: {e}")
+        return {"error": f"⚠️ {e}"}
 
 
 class GenerateRequest(BaseModel):
@@ -259,13 +306,8 @@ Respond with ONLY valid JSON: {{"problem": "the question text", "answer": "the c
         raw_response = safe_generate(prompt).text
         data = extract_json(raw_response)
     except Exception as e:
-        print(f"[generate_problem] JSON parse failed: {e}")
-        try:
-            raw_response = safe_generate(prompt).text
-            data = extract_json(raw_response)
-        except Exception as e2:
-            print(f"[generate_problem] Retry also failed: {e2}")
-            return {"error": "Could not generate a problem right now — try again."}
+        print(f"[generate_problem] failed: {e}")
+        return {"error": f"⚠️ {e}"}
 
     asked_problems_by_topic.setdefault(dedup_key, []).append(data["problem"])
 
@@ -298,12 +340,22 @@ Respond with ONLY valid JSON:
     try:
         judgment = extract_json(safe_generate(prompt).text)
     except Exception as e:
-        print(f"[judge_answer] JSON parse failed: {e}")
-        judgment = {"correct": False, "feedback": "Could not evaluate answer."}
+        print(f"[judge_answer] failed: {e}")
+        return {"error": f"⚠️ {e}"}
 
     db.log_gap(req.student_id, problem_data["topic"], judgment["correct"], problem_data.get("difficulty", "medium"))
+
+    prerequisite_suggestion = None
+    if not judgment["correct"] and is_struggling(req.student_id, problem_data["topic"]):
+        prerequisite_suggestion = get_prerequisite_suggestion(problem_data["topic"])
+
     del active_problems[req.problem_id]
-    return {"correct": judgment["correct"], "feedback": judgment["feedback"], "correct_answer": problem_data["answer"]}
+    return {
+        "correct": judgment["correct"],
+        "feedback": judgment["feedback"],
+        "correct_answer": problem_data["answer"],
+        "prerequisite_suggestion": prerequisite_suggestion
+    }
 
 
 @app.get("/api/insights")

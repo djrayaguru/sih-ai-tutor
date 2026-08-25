@@ -23,7 +23,7 @@ function createEmptySession() {
   return {
     id: Date.now(),
     title: 'New chat',
-    messages: [{ sender: 'bot', type: 'normal', text: 'Hi! Try asking me about linear equations, the binomial theorem, or probability — or ask something unrelated to see what happens.' }]
+        messages: [{ sender: 'bot', type: 'normal', text: 'Hi! Try asking me about linear equations, the binomial theorem, or probability — or ask something unrelated to see what happens.' }]
   }
 }
 
@@ -33,7 +33,7 @@ function logAttempt(topic, correct, question) {
   localStorage.setItem('student-progress-log', JSON.stringify(existing))
 }
 
-function ChatScreen() {
+function ChatScreen({ pendingQuestion, onConsumePending }) {
   const [sessions, setSessions] = useState(() => {
     const saved = localStorage.getItem('tutor-chat-sessions')
     return saved ? JSON.parse(saved) : [createEmptySession()]
@@ -46,16 +46,24 @@ function ChatScreen() {
     localStorage.setItem('tutor-chat-sessions', JSON.stringify(sessions))
   }, [sessions])
 
+  useEffect(() => {
+    if (pendingQuestion) {
+      handleSend(pendingQuestion)
+      onConsumePending()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingQuestion])
+
   const activeSession = sessions.find(s => s.id === activeId) || sessions[0]
 
   function updateActiveMessages(updater) {
     setSessions(prev => prev.map(s => s.id === activeSession.id ? { ...s, messages: updater(s.messages) } : s))
   }
 
-  async function handleSend() {
-    if (input.trim() === '') return
-    const query = input
-    setInput('')
+  async function handleSend(overrideText) {
+    const query = (overrideText ?? input).trim()
+    if (!query) return
+    if (!overrideText) setInput('')
 
     setSessions(prev => prev.map(s => {
       if (s.id !== activeSession.id) return s
@@ -71,18 +79,16 @@ function ChatScreen() {
       const res = await fetch('http://localhost:8000/api/ask', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query })
+        body: JSON.stringify({ query, student_id: getStudentId() })
       })
       const data = await res.json()
 
       if (data.refused) {
         updateActiveMessages(msgs => [...msgs.filter(m => m.type !== 'thinking'), { sender: 'bot', type: 'refusal', text: data.answer }])
       } else {
-        const cleanedAnswer = data.answer.replace(/\n*\*?\(?Source:[^)]*\)?\*?\s*$/i, '').trim()
-        const firstSource = data.sources && data.sources[0]
         const newMsgs = [{
-          sender: 'bot', type: 'citation', text: cleanedAnswer,
-          source: firstSource ? `${firstSource.source_file}, page ${firstSource.page}` : 'Course material'
+          sender: 'bot', type: 'answer', text: data.answer,
+          awaitingFeedback: data.awaiting_feedback, feedbackResolved: false
         }]
         const lowerQuery = query.toLowerCase()
         const knownTopic = KNOWN_TOPICS.find(t => lowerQuery.includes(t))
@@ -91,6 +97,28 @@ function ChatScreen() {
       }
     } catch {
       updateActiveMessages(msgs => [...msgs.filter(m => m.type !== 'thinking'), { sender: 'bot', type: 'refusal', text: "Couldn't reach the tutor server. Make sure it's running (uvicorn api:app --reload --port 8000)." }])
+    }
+  }
+
+    async function handleFeedback(messageIndex, understood) {
+    updateActiveMessages(msgs => msgs.map((m, i) => i === messageIndex ? { ...m, submittingFeedback: true } : m))
+    try {
+      const res = await fetch('http://localhost:8000/api/ask/feedback', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ student_id: getStudentId(), understood })
+      })
+      const data = await res.json()
+
+      updateActiveMessages(msgs => msgs.map((m, i) => i === messageIndex ? { ...m, submittingFeedback: false, feedbackResolved: true } : m))
+
+      if (data.error) {
+        updateActiveMessages(msgs => [...msgs, { sender: 'bot', type: 'refusal', text: data.error }])
+      } else if (!understood && data.answer) {
+        updateActiveMessages(msgs => [...msgs, { sender: 'bot', type: 'answer', text: data.answer, awaitingFeedback: true, feedbackResolved: false }])
+      }
+    } catch {
+      updateActiveMessages(msgs => msgs.map((m, i) => i === messageIndex ? { ...m, submittingFeedback: false } : m))
     }
   }
 
@@ -141,7 +169,7 @@ function ChatScreen() {
 
       logAttempt(msg.topic, data.correct, msg.problem)
       updateActiveMessages(msgs => msgs.map((m, i) => i === messageIndex ? {
-        ...m, submitting: false, answered: true, correct: data.correct, feedback: data.feedback, correctAnswer: data.correct_answer
+        ...m, submitting: false, answered: true, correct: data.correct, feedback: data.feedback, correctAnswer: data.correct_answer, prerequisiteSuggestion: data.prerequisite_suggestion
       } : m))
     } catch {
       updateActiveMessages(msgs => msgs.map((m, i) => i === messageIndex ? { ...m, submitting: false } : m))
@@ -202,6 +230,12 @@ function ChatScreen() {
                       <div>{msg.correct ? '✅ Correct!' : '❌ Not quite.'}</div>
                       <div>{msg.feedback}</div>
                       {!msg.correct && <div className="quiz-correct-answer">Correct answer: {msg.correctAnswer}</div>}
+                      {msg.prerequisiteSuggestion && (
+                        <div className="prerequisite-box">
+                          <p>💡 This often depends on understanding <strong>{msg.prerequisiteSuggestion}</strong> — worth reviewing that first.</p>
+                          <button onClick={() => handleSend(`Can you explain ${msg.prerequisiteSuggestion}?`)}>Ask about it →</button>
+                        </div>
+                      )}
                       <button className="quiz-start-btn" onClick={() => startQuiz(msg.topic)}>Try another {msg.topic} question →</button>
                     </div>
                   )}
@@ -217,19 +251,35 @@ function ChatScreen() {
               )
             }
 
+            if (msg.type === 'answer') {
+              return (
+                <div key={index} className="message bot answer">
+                  <ReactMarkdown remarkPlugins={[remarkMath, remarkGfm]} rehypePlugins={[rehypeKatex]}>
+                    {msg.text}
+                  </ReactMarkdown>
+                  {msg.awaitingFeedback && !msg.feedbackResolved && (
+                    <div className="understanding-check">
+                      <span>Did that make sense?</span>
+                      <button disabled={msg.submittingFeedback} onClick={() => handleFeedback(index, true)}>👍 Yes</button>
+                      <button disabled={msg.submittingFeedback} onClick={() => handleFeedback(index, false)}>👎 Not quite</button>
+                    </div>
+                  )}
+                </div>
+              )
+            }
+
             return (
               <div key={index} className={`message ${msg.sender} ${msg.type}`}>
                 <ReactMarkdown remarkPlugins={[remarkMath, remarkGfm]} rehypePlugins={[rehypeKatex]}>
                   {msg.text}
                 </ReactMarkdown>
-                {msg.type === 'citation' && <div className="citation-source">📄 Source: {msg.source}</div>}
               </div>
             )
           })}
         </div>
         <div className="input-area">
           <input value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleSend()} placeholder="Ask about linear equations, binomial theorem, probability..." />
-          <button onClick={handleSend}>Send</button>
+          <button onClick={() => handleSend()}>Send</button>
         </div>
       </div>
     </div>

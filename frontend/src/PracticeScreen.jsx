@@ -24,7 +24,7 @@ function logAttempt(topic, correct, question) {
   localStorage.setItem('student-progress-log', JSON.stringify(existing))
 }
 
-function PracticeScreen() {
+function PracticeScreen({ onAskPrerequisite }) {
   const [topic, setTopic] = useState(null)
   const [problem, setProblem] = useState(null)
   const [loading, setLoading] = useState(false)
@@ -140,6 +140,12 @@ function PracticeScreen() {
               <p>{feedback.correct ? '✅ Correct!' : '❌ Not quite.'}</p>
               <p>{feedback.feedback}</p>
               {!feedback.correct && <p><strong>Correct answer:</strong> {feedback.correct_answer}</p>}
+              {feedback.prerequisite_suggestion && (
+                <div className="prerequisite-box">
+                  <p>💡 This often depends on understanding <strong>{feedback.prerequisite_suggestion}</strong> — worth reviewing that first.</p>
+                  <button onClick={() => onAskPrerequisite(feedback.prerequisite_suggestion)}>Ask about it in Chat →</button>
+                </div>
+              )}
               <button onClick={() => fetchProblem(topic)}>Next question</button>
             </div>
           )}
