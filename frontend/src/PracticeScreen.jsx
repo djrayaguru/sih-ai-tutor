@@ -1,4 +1,9 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
+import ReactMarkdown from 'react-markdown'
+import remarkMath from 'remark-math'
+import remarkGfm from 'remark-gfm'
+import rehypeKatex from 'rehype-katex'
+import 'katex/dist/katex.min.css'
 import './App.css'
 
 const TOPICS = [
@@ -6,6 +11,9 @@ const TOPICS = [
   { key: 'binomial theorem', label: 'Binomial Theorem' },
   { key: 'probability', label: 'Probability' }
 ]
+
+const SESSION_LENGTH = 5
+const STORAGE_KEY = 'practice-session'
 
 function getStudentId() {
   const user = JSON.parse(localStorage.getItem('tutor-user') || 'null')
@@ -18,135 +26,211 @@ function getStudentId() {
   return anonId
 }
 
-function logAttempt(topic, correct, question) {
+function logAttemptLocal(topic, correct, question) {
   const existing = JSON.parse(localStorage.getItem('student-progress-log') || '[]')
   existing.push({ topic, correct, question, timestamp: Date.now() })
   localStorage.setItem('student-progress-log', JSON.stringify(existing))
 }
 
+function loadSession() {
+  const saved = localStorage.getItem(STORAGE_KEY)
+  return saved ? JSON.parse(saved) : null
+}
+
+function saveSession(session) {
+  if (session) localStorage.setItem(STORAGE_KEY, JSON.stringify(session))
+  else localStorage.removeItem(STORAGE_KEY)
+}
+
+function MathText({ children }) {
+  return (
+    <ReactMarkdown remarkPlugins={[remarkMath, remarkGfm]} rehypePlugins={[rehypeKatex]}>
+      {children}
+    </ReactMarkdown>
+  )
+}
+
 function PracticeScreen({ onAskPrerequisite }) {
-  const [topic, setTopic] = useState(null)
-  const [problem, setProblem] = useState(null)
+  const [session, setSession] = useState(loadSession)
   const [loading, setLoading] = useState(false)
-  const [answer, setAnswer] = useState('')
-  const [submitting, setSubmitting] = useState(false)
-  const [feedback, setFeedback] = useState(null)
   const [errorMsg, setErrorMsg] = useState(null)
 
-  async function fetchProblem(t) {
+  useEffect(() => {
+    saveSession(session)
+  }, [session])
+
+  useEffect(() => {
+    if (session && !session.finished && !session.questions[session.currentIndex]) {
+      fetchQuestion()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session?.currentIndex, session?.topic, session?.finished])
+
+  async function fetchQuestion() {
+    if (!session) return
     setLoading(true)
-    setFeedback(null)
-    setAnswer('')
     setErrorMsg(null)
     try {
       const res = await fetch('http://localhost:8000/api/practice/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ topic: t, student_id: getStudentId() })
+        body: JSON.stringify({ topic: session.topic, student_id: getStudentId() })
       })
       const data = await res.json()
       if (data.error) {
         setErrorMsg(data.error)
-        setProblem(null)
-      } else {
-        setProblem(data)
+        setLoading(false)
+        return
       }
+      setSession(prev => ({ ...prev, questions: [...prev.questions, data] }))
     } catch {
       setErrorMsg("Couldn't reach the tutor server. Make sure it's running.")
-      setProblem(null)
     }
     setLoading(false)
   }
 
-  function handleSelectTopic(t) {
-    setTopic(t)
-    fetchProblem(t)
+  function handleSelectTopic(topicKey, topicLabel) {
+    setErrorMsg(null)
+    setSession({
+      topic: topicKey,
+      topicLabel,
+      sessionLength: SESSION_LENGTH,
+      currentIndex: 0,
+      questions: [],
+      answers: [],
+      finished: false
+    })
   }
 
   function handleChangeTopic() {
-    setTopic(null)
-    setProblem(null)
-    setFeedback(null)
+    setSession(null)
+    saveSession(null)
     setErrorMsg(null)
   }
 
-  async function handleSubmit() {
-    if (!answer.trim() || !problem) return
-    setSubmitting(true)
+  async function handleSelectOption(optionIndex) {
+    const currentQuestion = session.questions[session.currentIndex]
+    if (session.answers[session.currentIndex]) return
+
+    const correct = optionIndex === currentQuestion.correct_index
+    const newAnswers = [...session.answers]
+    newAnswers[session.currentIndex] = { selectedIndex: optionIndex, correct, prerequisiteSuggestion: null }
+    setSession(prev => ({ ...prev, answers: newAnswers }))
+
+    logAttemptLocal(session.topic, correct, currentQuestion.question)
+
     try {
-      const res = await fetch('http://localhost:8000/api/practice/judge', {
+      const res = await fetch('http://localhost:8000/api/practice/log', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ problem_id: problem.problem_id, student_answer: answer, student_id: getStudentId() })
+        body: JSON.stringify({ student_id: getStudentId(), topic: session.topic, correct, difficulty: currentQuestion.difficulty })
       })
       const data = await res.json()
-      if (data.error) {
-        setErrorMsg(data.error)
-      } else {
-        logAttempt(topic, data.correct, problem.problem)
-        setFeedback(data)
+      if (!correct && data.prerequisite_suggestion) {
+        setSession(prev => {
+          const updated = [...prev.answers]
+          updated[prev.currentIndex] = { ...updated[prev.currentIndex], prerequisiteSuggestion: data.prerequisite_suggestion }
+          return { ...prev, answers: updated }
+        })
       }
     } catch {
-      setErrorMsg("Couldn't reach the tutor server to check your answer.")
+      // logging failure shouldn't block the quiz flow
     }
-    setSubmitting(false)
   }
 
-  if (!topic) {
+  function handleNext() {
+    const nextIndex = session.currentIndex + 1
+    if (nextIndex >= session.sessionLength) {
+      setSession(prev => ({ ...prev, finished: true }))
+    } else {
+      setSession(prev => ({ ...prev, currentIndex: nextIndex }))
+    }
+  }
+
+  function handleRestart() {
+    handleSelectTopic(session.topic, session.topicLabel)
+  }
+
+  if (!session) {
     return (
       <div className="practice-container">
         <h3>What do you want to practice?</h3>
         <div className="topic-picker">
           {TOPICS.map(t => (
-            <button key={t.key} className="topic-picker-btn" onClick={() => handleSelectTopic(t.key)}>{t.label}</button>
+            <button key={t.key} className="topic-picker-btn" onClick={() => handleSelectTopic(t.key, t.label)}>{t.label}</button>
           ))}
         </div>
       </div>
     )
   }
 
+  if (session.finished) {
+    const correctCount = session.answers.filter(a => a && a.correct).length
+    return (
+      <div className="practice-container">
+        <div className="quiz-results">
+          <div className="quiz-results-score">{correctCount}/{session.sessionLength}</div>
+          <h3>Session complete — {session.topicLabel}</h3>
+          <p className="dashboard-note">You got {correctCount} out of {session.sessionLength} correct.</p>
+          <div className="quiz-results-actions">
+            <button className="quiz-start-btn" onClick={handleRestart}>Practice {session.topicLabel} again</button>
+            <button className="change-topic-link" onClick={handleChangeTopic}>← Choose a different topic</button>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  const currentQuestion = session.questions[session.currentIndex]
+  const currentAnswer = session.answers[session.currentIndex]
+
   return (
     <div className="practice-container">
-      <button className="change-topic-link" onClick={handleChangeTopic}>← Choose a different topic</button>
-
-      {loading && <p className="practice-progress">Generating a question...</p>}
+      <div className="quiz-session-header">
+        <button className="change-topic-link" onClick={handleChangeTopic}>← Choose a different topic</button>
+        <span className="quiz-session-progress">Question {session.currentIndex + 1} of {session.sessionLength}</span>
+      </div>
 
       {errorMsg && (
         <div className="feedback wrong">
           <p>{errorMsg}</p>
-          <button onClick={() => fetchProblem(topic)}>Try again</button>
+          <button onClick={fetchQuestion}>Try again</button>
         </div>
       )}
 
-      {problem && !loading && (
-        <>
-          <div className="quiz-level-tag">{problem.difficulty?.toUpperCase()}</div>
-          <h3>{problem.problem}</h3>
+      {loading && !currentQuestion && <p className="practice-progress">Generating a question...</p>}
 
-          {!feedback ? (
-            <div className="quiz-answer-row">
-              <input
-                type="text"
-                placeholder="Type your answer..."
-                value={answer}
-                onChange={(e) => setAnswer(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && handleSubmit()}
-                disabled={submitting}
-              />
-              <button onClick={handleSubmit} disabled={submitting}>{submitting ? 'Checking...' : 'Submit'}</button>
-            </div>
-          ) : (
-            <div className={`feedback ${feedback.correct ? 'correct' : 'wrong'}`}>
-              <p>{feedback.correct ? '✅ Correct!' : '❌ Not quite.'}</p>
-              <p>{feedback.feedback}</p>
-              {!feedback.correct && <p><strong>Correct answer:</strong> {feedback.correct_answer}</p>}
-              {feedback.prerequisite_suggestion && (
+      {currentQuestion && (
+        <>
+          <div className="quiz-level-tag">{currentQuestion.difficulty?.toUpperCase()}</div>
+          <h3 className="quiz-math-heading"><MathText>{currentQuestion.question}</MathText></h3>
+
+          <div className="options">
+            {currentQuestion.options.map((opt, i) => {
+              let cls = 'option'
+              if (currentAnswer) {
+                if (i === currentQuestion.correct_index) cls += ' correct'
+                else if (i === currentAnswer.selectedIndex) cls += ' wrong'
+              }
+              return (
+                <button key={i} className={cls} disabled={!!currentAnswer} onClick={() => handleSelectOption(i)}>
+                  <MathText>{opt}</MathText>
+                </button>
+              )
+            })}
+          </div>
+
+          {currentAnswer && (
+            <div className={`feedback ${currentAnswer.correct ? 'correct' : 'wrong'}`}>
+              <p>{currentAnswer.correct ? '✅ Correct!' : '❌ Not quite.'}</p>
+              {currentQuestion.explanation && <div className="quiz-math-explanation"><MathText>{currentQuestion.explanation}</MathText></div>}
+              {currentAnswer.prerequisiteSuggestion && (
                 <div className="prerequisite-box">
-                  <p>💡 This often depends on understanding <strong>{feedback.prerequisite_suggestion}</strong> — worth reviewing that first.</p>
-                  <button onClick={() => onAskPrerequisite(feedback.prerequisite_suggestion)}>Ask about it in Chat →</button>
+                  <p>💡 This often depends on understanding <strong>{currentAnswer.prerequisiteSuggestion}</strong> — worth reviewing that first.</p>
+                  <button onClick={() => onAskPrerequisite(currentAnswer.prerequisiteSuggestion)}>Ask about it in Chat →</button>
                 </div>
               )}
-              <button onClick={() => fetchProblem(topic)}>Next question</button>
+              <button onClick={handleNext}>{session.currentIndex + 1 >= session.sessionLength ? 'See results' : 'Next question'}</button>
             </div>
           )}
         </>

@@ -100,6 +100,38 @@ PREREQUISITE_MAP = {
     "probability": ["basic fractions and ratios", "counting outcomes"],
 }
 
+KNOWN_TOPICS = list(PREREQUISITE_MAP.keys())
+
+
+def detect_topic(query):
+    lower = query.lower()
+    for t in KNOWN_TOPICS:
+        if t in lower:
+            return t
+    return None
+
+
+def topic_already_covered(student_id, topic):
+    history = db.get_conversation_history(student_id)
+    for entry in history:
+        if detect_topic(entry["query"]) == topic:
+            return True
+    return False
+
+
+SOURCE_PATTERN = re.compile(r"\[Source: (.+?), page (\d+)\]")
+
+
+def extract_sources_from_context(context):
+    seen = set()
+    sources = []
+    for file, page in SOURCE_PATTERN.findall(context):
+        key = (file, page)
+        if key not in seen:
+            seen.add(key)
+            sources.append({"source_file": file, "page": int(page)})
+    return sources
+
 
 def is_struggling(student_id, topic):
     attempts = db.get_attempts_for_student(student_id)
@@ -199,8 +231,56 @@ Student question: {query}
 Answer:"""
 
 
-active_problems = {}
+GATED_PATTERN = re.compile(r"PREREQ_CHECK:\s*(\{.*?\})\s*FULL_ANSWER:\s*(.*)", re.DOTALL)
+
+
+def build_gated_concept_prompt(query, context, topic, prerequisite):
+    return f"""You are a patient, encouraging tutor. A student is about to ask about "{topic}", which depends on
+understanding "{prerequisite}" first. Before diving in, quickly check whether they remember it.
+
+Using ONLY the context below, produce TWO things:
+
+1. A short multiple-choice check-in question testing whether the student recalls or understands
+"{prerequisite}" — exactly 2 answer options, only one correct, quick and low-stakes.
+
+2. The complete teaching explanation answering the student's actual question about "{topic}":
+- Format ALL mathematical notation using LaTeX wrapped in dollar signs (e.g. $\\frac{{A}}{{B}}$, $x^2$).
+- Do NOT copy sentences directly from the context — teach it in your own words like a real tutor.
+- Open with a relatable analogy or why it matters, give a plain-language explanation, break down any
+  formula piece by piece, and walk through one concrete worked example step by step.
+- Use short markdown headers (###) for each section, short paragraphs (2-3 sentences max), and bullet
+  lists whenever presenting more than one related case — never a dense wall of text.
+- Always mention which page number(s) your explanation comes from.
+- End by asking: "Did that make sense?"
+- If the context does not contain enough information, say so clearly.
+
+Context:
+{context}
+
+Student question: {query}
+
+Respond in EXACTLY this format and nothing else — no extra commentary before or after:
+PREREQ_CHECK:
+{{"question": "...", "options": ["...", "..."], "correct_index": 0}}
+FULL_ANSWER:
+(the full explanation goes here, starting on the next line)"""
+
+
+def parse_gated_response(text):
+    match = GATED_PATTERN.search(text)
+    if not match:
+        raise ValueError("Could not parse gated response format")
+    prereq_data = extract_json(match.group(1))
+    full_answer = match.group(2).strip()
+    return prereq_data, full_answer
+
+
 asked_problems_by_topic = {}
+
+
+class Message(BaseModel):
+    role: str
+    content: str
 
 
 class AskRequest(BaseModel):
@@ -218,6 +298,7 @@ def ask(req: AskRequest):
             effective_query = target["query"]
             previous_explanation = target["explanation"]
             is_followup = True
+            topic = None
         else:
             results = retrieve(req.query)
             top_score = results[0]["score"]
@@ -229,6 +310,32 @@ def ask(req: AskRequest):
             effective_query = req.query
             previous_explanation = None
             is_followup = False
+            topic = detect_topic(req.query)
+
+        sources = extract_sources_from_context(context)
+
+        if not is_followup and topic and topic in PREREQUISITE_MAP and not topic_already_covered(req.student_id, topic):
+            prerequisite = PREREQUISITE_MAP[topic][0]
+            gated_prompt = build_gated_concept_prompt(effective_query, context, topic, prerequisite)
+            prereq_data, full_answer = None, None
+            try:
+                raw = safe_generate(gated_prompt).text
+                prereq_data, full_answer = parse_gated_response(raw)
+            except Exception as e:
+                print(f"[gated prompt] failed, falling back to normal answer: {e}")
+
+            if prereq_data and full_answer:
+                db.log_conversation(req.student_id, effective_query, context, full_answer)
+                return {
+                    "refused": False,
+                    "gated": True,
+                    "prereq_question": prereq_data["question"],
+                    "prereq_options": prereq_data["options"],
+                    "prereq_correct_index": prereq_data["correct_index"],
+                    "full_answer": full_answer,
+                    "sources": sources,
+                    "awaiting_feedback": True
+                }
 
         prompt = build_concept_prompt(effective_query, context, previous_explanation)
         response = safe_generate(prompt)
@@ -237,8 +344,10 @@ def ask(req: AskRequest):
 
         return {
             "refused": False,
+            "gated": False,
             "answer": response.text,
             "is_followup": is_followup,
+            "sources": sources,
             "awaiting_feedback": True
         }
     except Exception as e:
@@ -266,7 +375,7 @@ def ask_feedback(req: FeedbackRequest):
         prompt = build_concept_prompt(last["query"], last["context"], last["explanation"])
         response = safe_generate(prompt)
         db.log_conversation(req.student_id, last["query"], last["context"], response.text)
-        return {"answer": response.text, "awaiting_feedback": True}
+        return {"answer": response.text, "awaiting_feedback": True, "sources": extract_sources_from_context(last["context"])}
     except Exception as e:
         print(f"[/api/ask/feedback] failed: {e}")
         return {"error": f"⚠️ {e}"}
@@ -291,16 +400,20 @@ def generate_problem_endpoint(req: GenerateRequest):
     avoid_block = ""
     if previously_asked:
         avoid_list = "\n".join(f"- {q}" for q in previously_asked[-5:])
-        avoid_block = f"\n\nDo NOT repeat any of these previously asked problems, and don't just reword them — use a different part of the context, different numbers, or a different angle:\n{avoid_list}"
+        avoid_block = f"\n\nDo NOT repeat any of these previously asked questions, and don't just reword them — use a different part of the context, different numbers, or a different angle:\n{avoid_list}"
 
-    prompt = f"""Based ONLY on the context below, create ONE {difficulty}-difficulty practice problem
+    prompt = f"""Based ONLY on the context below, create ONE {difficulty}-difficulty multiple-choice question
 to test a student's understanding of "{req.topic}".
-The problem must be solvable using only the concepts in this context.{avoid_block}
+- Write exactly 4 answer options, only one of which is correct.
+- The 3 wrong options should be plausible mistakes a student might realistically make, not obviously silly.
+- The question must be solvable using only the concepts in this context.{avoid_block}
 
 Context:
 {context}
 
-Respond with ONLY valid JSON: {{"problem": "the question text", "answer": "the correct answer", "topic": "{req.topic}", "difficulty": "{difficulty}"}}"""
+Respond with ONLY valid JSON in this exact format:
+{{"question": "the question text", "options": ["option A", "option B", "option C", "option D"], "correct_index": 0, "explanation": "one short sentence explaining why the correct answer is right", "topic": "{req.topic}", "difficulty": "{difficulty}"}}
+"correct_index" must be the 0-based index into "options" of the correct answer."""
 
     try:
         raw_response = safe_generate(prompt).text
@@ -309,53 +422,35 @@ Respond with ONLY valid JSON: {{"problem": "the question text", "answer": "the c
         print(f"[generate_problem] failed: {e}")
         return {"error": f"⚠️ {e}"}
 
-    asked_problems_by_topic.setdefault(dedup_key, []).append(data["problem"])
+    asked_problems_by_topic.setdefault(dedup_key, []).append(data["question"])
 
-    problem_id = str(uuid.uuid4())
-    active_problems[problem_id] = data
-    return {"problem_id": problem_id, "problem": data["problem"], "topic": data["topic"], "difficulty": data["difficulty"]}
+    return {
+        "problem_id": str(uuid.uuid4()),
+        "question": data["question"],
+        "options": data["options"],
+        "correct_index": data["correct_index"],
+        "explanation": data.get("explanation", ""),
+        "topic": data["topic"],
+        "difficulty": data["difficulty"]
+    }
 
 
-class JudgeRequest(BaseModel):
-    problem_id: str
-    student_answer: str
+class LogAttemptRequest(BaseModel):
     student_id: str
+    topic: str
+    correct: bool
+    difficulty: str
 
 
-@app.post("/api/practice/judge")
-def judge_answer_endpoint(req: JudgeRequest):
-    problem_data = active_problems.get(req.problem_id)
-    if not problem_data:
-        return {"error": "This problem has expired — generate a new one."}
-
-    prompt = f"""Question: {problem_data['problem']}
-Correct answer: {problem_data['answer']}
-Student's answer: {req.student_answer}
-
-Judge if correct, accepting equivalent forms: different notation, simplified vs unsimplified,
-with/without units if implied, and different letter casing (e.g. treat "a" and "A" as the same variable).
-Respond with ONLY valid JSON:
-{{"correct": true or false, "feedback": "one short sentence"}}"""
-
-    try:
-        judgment = extract_json(safe_generate(prompt).text)
-    except Exception as e:
-        print(f"[judge_answer] failed: {e}")
-        return {"error": f"⚠️ {e}"}
-
-    db.log_gap(req.student_id, problem_data["topic"], judgment["correct"], problem_data.get("difficulty", "medium"))
+@app.post("/api/practice/log")
+def log_attempt_endpoint(req: LogAttemptRequest):
+    db.log_gap(req.student_id, req.topic, req.correct, req.difficulty)
 
     prerequisite_suggestion = None
-    if not judgment["correct"] and is_struggling(req.student_id, problem_data["topic"]):
-        prerequisite_suggestion = get_prerequisite_suggestion(problem_data["topic"])
+    if not req.correct and is_struggling(req.student_id, req.topic):
+        prerequisite_suggestion = get_prerequisite_suggestion(req.topic)
 
-    del active_problems[req.problem_id]
-    return {
-        "correct": judgment["correct"],
-        "feedback": judgment["feedback"],
-        "correct_answer": problem_data["answer"],
-        "prerequisite_suggestion": prerequisite_suggestion
-    }
+    return {"logged": True, "prerequisite_suggestion": prerequisite_suggestion}
 
 
 @app.get("/api/insights")

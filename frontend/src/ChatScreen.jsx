@@ -23,7 +23,7 @@ function createEmptySession() {
   return {
     id: Date.now(),
     title: 'New chat',
-        messages: [{ sender: 'bot', type: 'normal', text: 'Hi! Try asking me about linear equations, the binomial theorem, or probability — or ask something unrelated to see what happens.' }]
+    messages: [{ sender: 'bot', type: 'normal', text: 'Hi! Try asking me about linear equations, the binomial theorem, or probability — or ask something unrelated to see what happens.' }]
   }
 }
 
@@ -40,7 +40,6 @@ function ChatScreen({ pendingQuestion, onConsumePending }) {
   })
   const [activeId, setActiveId] = useState(() => sessions[0].id)
   const [input, setInput] = useState('')
-  const [quizDrafts, setQuizDrafts] = useState({})
 
   useEffect(() => {
     localStorage.setItem('tutor-chat-sessions', JSON.stringify(sessions))
@@ -100,7 +99,7 @@ function ChatScreen({ pendingQuestion, onConsumePending }) {
     }
   }
 
-    async function handleFeedback(messageIndex, understood) {
+  async function handleFeedback(messageIndex, understood) {
     updateActiveMessages(msgs => msgs.map((m, i) => i === messageIndex ? { ...m, submittingFeedback: true } : m))
     try {
       const res = await fetch('http://localhost:8000/api/ask/feedback', {
@@ -136,43 +135,35 @@ function ChatScreen({ pendingQuestion, onConsumePending }) {
         return
       }
       updateActiveMessages(msgs => [...msgs.filter(m => m.type !== 'quiz-generating'), {
-        sender: 'bot', type: 'quiz-open', problem_id: data.problem_id, problem: data.problem, topic: data.topic, difficulty: data.difficulty, answered: false
+        sender: 'bot', type: 'quiz-open', topic: data.topic, difficulty: data.difficulty,
+        question: data.question, options: data.options, correct_index: data.correct_index, explanation: data.explanation,
+        answered: false, selectedIndex: null, correct: null, prerequisiteSuggestion: null
       }])
     } catch {
       updateActiveMessages(msgs => [...msgs.filter(m => m.type !== 'quiz-generating'), { sender: 'bot', type: 'refusal', text: "Couldn't reach the tutor server to generate a question." }])
     }
   }
 
-  function handleDraftChange(index, value) {
-    setQuizDrafts(prev => ({ ...prev, [index]: value }))
-  }
-
-  async function handleQuizSubmit(messageIndex) {
+  async function handleQuizAnswer(messageIndex, optionIndex) {
     const msg = activeSession.messages[messageIndex]
-    const answer = (quizDrafts[messageIndex] || '').trim()
-    if (!answer) return
+    if (msg.answered) return
 
-    updateActiveMessages(msgs => msgs.map((m, i) => i === messageIndex ? { ...m, submitting: true } : m))
+    const correct = optionIndex === msg.correct_index
+    updateActiveMessages(msgs => msgs.map((m, i) => i === messageIndex ? { ...m, answered: true, selectedIndex: optionIndex, correct } : m))
+    logAttempt(msg.topic, correct, msg.question)
 
     try {
-      const res = await fetch('http://localhost:8000/api/practice/judge', {
+      const res = await fetch('http://localhost:8000/api/practice/log', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ problem_id: msg.problem_id, student_answer: answer, student_id: getStudentId() })
+        body: JSON.stringify({ student_id: getStudentId(), topic: msg.topic, correct, difficulty: msg.difficulty })
       })
       const data = await res.json()
-
-      if (data.error) {
-        updateActiveMessages(msgs => msgs.map((m, i) => i === messageIndex ? { ...m, submitting: false, answered: true, errorMsg: data.error } : m))
-        return
+      if (!correct && data.prerequisite_suggestion) {
+        updateActiveMessages(msgs => msgs.map((m, i) => i === messageIndex ? { ...m, prerequisiteSuggestion: data.prerequisite_suggestion } : m))
       }
-
-      logAttempt(msg.topic, data.correct, msg.problem)
-      updateActiveMessages(msgs => msgs.map((m, i) => i === messageIndex ? {
-        ...m, submitting: false, answered: true, correct: data.correct, feedback: data.feedback, correctAnswer: data.correct_answer, prerequisiteSuggestion: data.prerequisite_suggestion
-      } : m))
     } catch {
-      updateActiveMessages(msgs => msgs.map((m, i) => i === messageIndex ? { ...m, submitting: false } : m))
+      // logging failure shouldn't block the UI
     }
   }
 
@@ -204,32 +195,26 @@ function ChatScreen({ pendingQuestion, onConsumePending }) {
               return (
                 <div key={index} className="message bot quiz">
                   <div className="quiz-level-tag">{msg.difficulty?.toUpperCase()}</div>
-                  <div className="quiz-problem-text">{msg.problem}</div>
+                  <div className="quiz-problem-text">{msg.question}</div>
+                  <div className="quiz-options">
+                    {msg.options.map((opt, i) => {
+                      let cls = 'quiz-option'
+                      if (msg.answered) {
+                        if (i === msg.correct_index) cls += ' correct'
+                        else if (i === msg.selectedIndex) cls += ' wrong'
+                      }
+                      return (
+                        <button key={i} className={cls} disabled={msg.answered} onClick={() => handleQuizAnswer(index, i)}>
+                          {opt}
+                        </button>
+                      )
+                    })}
+                  </div>
 
-                  {!msg.answered ? (
-                    <div className="quiz-answer-row">
-                      <input
-                        type="text"
-                        placeholder="Your answer..."
-                        value={quizDrafts[index] || ''}
-                        onChange={(e) => handleDraftChange(index, e.target.value)}
-                        onKeyDown={(e) => e.key === 'Enter' && handleQuizSubmit(index)}
-                        disabled={msg.submitting}
-                      />
-                      <button onClick={() => handleQuizSubmit(index)} disabled={msg.submitting}>
-                        {msg.submitting ? 'Checking...' : 'Submit'}
-                      </button>
-                    </div>
-                  ) : msg.errorMsg ? (
-                    <div className="quiz-feedback wrong">
-                      <div>{msg.errorMsg}</div>
-                      <button className="quiz-start-btn" onClick={() => startQuiz(msg.topic)}>Try another {msg.topic} question →</button>
-                    </div>
-                  ) : (
+                  {msg.answered && (
                     <div className={`quiz-feedback ${msg.correct ? 'correct' : 'wrong'}`}>
                       <div>{msg.correct ? '✅ Correct!' : '❌ Not quite.'}</div>
-                      <div>{msg.feedback}</div>
-                      {!msg.correct && <div className="quiz-correct-answer">Correct answer: {msg.correctAnswer}</div>}
+                      {msg.explanation && <div>{msg.explanation}</div>}
                       {msg.prerequisiteSuggestion && (
                         <div className="prerequisite-box">
                           <p>💡 This often depends on understanding <strong>{msg.prerequisiteSuggestion}</strong> — worth reviewing that first.</p>

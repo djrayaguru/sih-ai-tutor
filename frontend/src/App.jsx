@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import HomeScreen from './HomeScreen'
 import ChatScreen from './ChatScreen'
 import PracticeScreen from './PracticeScreen'
 import DashboardScreen from './DashboardScreen'
@@ -122,28 +123,7 @@ function App() {
       </header>
 
       <main className="flex-1 overflow-y-auto p-margin-mobile md:p-margin-desktop w-full max-w-[1280px] mx-auto pb-24 md:pb-margin-desktop">
-        {activeTab === 'home' && (
-          <div className="grid grid-cols-1 md:grid-cols-12 gap-gutter">
-            <div className="col-span-1 md:col-span-12 bg-surface-container-lowest rounded-2xl p-md md:p-lg shadow-[0px_4px_12px_rgba(79,70,229,0.04)] border border-surface-container flex flex-col md:flex-row items-center justify-between gap-md relative overflow-hidden">
-              <div className="absolute right-0 top-0 w-1/3 h-full opacity-10 bg-gradient-to-l from-primary to-transparent pointer-events-none"></div>
-              <div className="relative z-10 w-full md:w-2/3">
-                <h2 className="text-headline-lg font-headline-lg text-on-surface mb-2">
-                  {user ? `Ready to learn, ${user.name.split(' ')[0]}?` : 'Ready to learn?'}
-                </h2>
-                <p className="text-body-lg font-body-lg text-on-surface-variant mb-6">Ask a question, try a quiz, or check your progress below.</p>
-                <button
-                  onClick={() => setActiveTab('chat')}
-                  className="bg-primary text-on-primary text-label-md font-label-md rounded-xl py-3 px-6 hover:bg-primary-container transition-all hover:-translate-y-0.5 shadow-sm inline-flex items-center gap-2"
-                >
-                  Start Session <span className="material-symbols-outlined text-sm">arrow_forward</span>
-                </button>
-              </div>
-              <div className="relative w-full md:w-1/3 h-48 rounded-xl overflow-hidden shadow-sm bg-gradient-to-br from-primary-fixed to-secondary-container flex items-center justify-center">
-                <span className="material-symbols-outlined text-white text-6xl opacity-80">school</span>
-              </div>
-            </div>
-          </div>
-        )}
+        {activeTab === 'home' && <HomeScreen user={user} onNavigate={setActiveTab} />}
 
         {activeTab === 'chat' && <ChatScreen pendingQuestion={pendingChatQuestion} onConsumePending={() => setPendingChatQuestion(null)} />}
         {activeTab === 'practice' && <PracticeScreen onAskPrerequisite={handleAskPrerequisite} />}
