@@ -5,7 +5,7 @@ import json
 import re
 import time
 import uuid
-
+import auth 
 import faiss
 from sentence_transformers import SentenceTransformer
 import google.generativeai as genai
@@ -332,29 +332,30 @@ def judge_answer_endpoint(req: JudgeRequest):
 Correct answer: {problem_data['answer']}
 Student's answer: {req.student_answer}
 
-Judge if correct, accepting equivalent forms: different notation, simplified vs unsimplified,
-with/without units if implied, and different letter casing (e.g. treat "a" and "A" as the same variable).
-Respond with ONLY valid JSON:
-{{"correct": true or false, "feedback": "one short sentence"}}"""
+First, judge if the student's answer is correct. Accept equivalent forms: different notation,
+simplified vs unsimplified, with/without units if implied, and different letter casing
+(e.g. treat "a" and "A" as the same variable).
+
+Then provide a clear, step-by-step worked solution showing HOW to solve this problem correctly —
+written so the student can check their own method against it, regardless of whether they got the
+right answer. Walk through the reasoning step by step, not just the final calculation.
+
+Respond with ONLY valid JSON in this exact format:
+{{"correct": true or false, "feedback": "one short sentence on whether they got it right", "solution": "the full step-by-step worked solution"}}"""
 
     try:
         judgment = extract_json(safe_generate(prompt).text)
     except Exception as e:
-        print(f"[judge_answer] failed: {e}")
-        return {"error": f"⚠️ {e}"}
+        print(f"[judge_answer] JSON parse failed: {e}")
+        judgment = {"correct": False, "feedback": "Could not evaluate answer.", "solution": "Not available."}
 
     db.log_gap(req.student_id, problem_data["topic"], judgment["correct"], problem_data.get("difficulty", "medium"))
-
-    prerequisite_suggestion = None
-    if not judgment["correct"] and is_struggling(req.student_id, problem_data["topic"]):
-        prerequisite_suggestion = get_prerequisite_suggestion(problem_data["topic"])
-
     del active_problems[req.problem_id]
     return {
         "correct": judgment["correct"],
         "feedback": judgment["feedback"],
         "correct_answer": problem_data["answer"],
-        "prerequisite_suggestion": prerequisite_suggestion
+        "solution": judgment.get("solution", "Not available.")
     }
 
 
@@ -383,3 +384,36 @@ def get_insights():
         key=lambda x: x["struggle_rate"], reverse=True
     )
     return {"topics": topics, "total_attempts": len(gaps)}
+
+class SignupRequest(BaseModel):
+    name: str
+    email: str
+    password: str
+
+
+@app.post("/api/auth/signup")
+def signup(req: SignupRequest):
+    existing = db.get_user_by_email(req.email)
+    if existing:
+        return {"error": "An account with this email already exists."}
+
+    hashed = auth.hash_password(req.password)
+    db.create_user(req.name, req.email, hashed)
+
+    token = auth.create_access_token(req.email)
+    return {"token": token, "name": req.name, "email": req.email}
+
+
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
+
+@app.post("/api/auth/login")
+def login(req: LoginRequest):
+    user = db.get_user_by_email(req.email)
+    if not user or not auth.verify_password(req.password, user["hashed_password"]):
+        return {"error": "Invalid email or password."}
+
+    token = auth.create_access_token(req.email)
+    return {"token": token, "name": user["name"], "email": user["email"]}
