@@ -142,16 +142,22 @@ def judge_answer(problem, correct_answer, student_answer):
 Correct answer: {correct_answer}
 Student's answer: {student_answer}
 
-Judge if the student's answer is correct. Accept equivalent forms (e.g. different notation,
-simplified vs unsimplified, with/without units if implied). Respond with ONLY valid JSON:
-{{"correct": true or false, "feedback": "one short sentence explaining why"}}"""
+First, judge if the student's answer is correct. Accept equivalent forms (e.g. different notation,
+simplified vs unsimplified, with/without units if implied).
+
+Then provide a clear, step-by-step worked solution showing HOW to solve this problem correctly —
+written so the student can check their own method against it, regardless of whether they got the
+right answer. Walk through the reasoning step by step, not just the final calculation.
+
+Respond with ONLY valid JSON in this exact format:
+{{"correct": true or false, "feedback": "one short sentence on whether they got it right", "solution": "the full step-by-step worked solution"}}"""
 
     response = safe_generate(prompt)
     try:
         return extract_json(response.text)
     except Exception as e:
         print(f"Could not parse judgment: {e}")
-        return {"correct": False, "feedback": "Could not evaluate answer."}
+        return {"correct": False, "feedback": "Could not evaluate answer.", "solution": "Not available."}
 
 
 def log_gap(student_id, topic, correct, difficulty):
@@ -172,8 +178,9 @@ def practice_session(student_id):
     if judgment["correct"]:
         print(f"\n✓ Correct! {judgment['feedback']}")
     else:
-        print(f"\nX Not quite. {judgment['feedback']}")
-        print(f"Correct answer: {problem_data['answer']}")
+        print(f"\n✗ Not quite. {judgment['feedback']}")
+
+    print(f"\nHere's the full worked solution so you can check your method:\n{judgment['solution']}")
 
     log_gap(student_id, topic, judgment["correct"], problem_data.get("difficulty", "medium"))
     print(f"Logged to {db.DB_FILE}")

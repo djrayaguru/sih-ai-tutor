@@ -6,3 +6,5 @@ google-generativeai
 python-dotenv
 pypdf
 watchdog
+bcrypt
+python-jose[cryptography]

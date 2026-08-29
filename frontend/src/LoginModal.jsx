@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { API_BASE_URL } from './config'
 
 function GoogleIcon() {
   return (
@@ -16,19 +17,41 @@ function LoginModal({ onClose, onLogin }) {
   const [name, setName] = useState('')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+  const [errorMsg, setErrorMsg] = useState(null)
 
-  function handleSubmit(e) {
+  async function handleSubmit(e) {
     e.preventDefault()
     if (!email.trim() || !password.trim()) return
-    onLogin({
-      name: mode === 'signup' && name.trim() ? name.trim() : email.split('@')[0],
-      email: email.trim(),
-      picture: null
-    })
+    setErrorMsg(null)
+    setSubmitting(true)
+
+    const endpoint = mode === 'signup' ? '/api/auth/signup' : '/api/auth/login'
+    const body = mode === 'signup'
+      ? { name: name.trim() || email.split('@')[0], email: email.trim(), password }
+      : { email: email.trim(), password }
+
+    try {
+      const res = await fetch(`${API_BASE_URL}${endpoint}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      })
+      const data = await res.json()
+
+      if (data.error) {
+        setErrorMsg(data.error)
+      } else {
+        onLogin({ name: data.name, email: data.email, picture: null, token: data.token })
+      }
+    } catch {
+      setErrorMsg("Couldn't reach the server. Make sure the backend is running.")
+    }
+    setSubmitting(false)
   }
 
   function handleGoogleFake() {
-    onLogin({ name: 'Demo Student', email: 'demo.student@gmail.com', picture: null })
+    onLogin({ name: 'Demo Student', email: 'demo.student@gmail.com', picture: null, token: null })
   }
 
   return (
@@ -41,27 +64,31 @@ function LoginModal({ onClose, onLogin }) {
         <h2 className="modal-title">{mode === 'signin' ? 'Welcome back' : 'Create your account'}</h2>
         <p className="modal-subtitle">{mode === 'signin' ? 'Sign in to save your chats and progress.' : 'Sign up to start tracking your learning.'}</p>
 
-        <button className="google-fake-btn" onClick={handleGoogleFake}>
+        <button className="google-fake-btn" onClick={handleGoogleFake} type="button">
           <GoogleIcon />
           Continue with Google
         </button>
 
         <div className="modal-divider"><span>or</span></div>
 
+        {errorMsg && <p className="modal-error">{errorMsg}</p>}
+
         <form onSubmit={handleSubmit} className="modal-form">
           {mode === 'signup' && (
             <input type="text" placeholder="Full name" value={name} onChange={(e) => setName(e.target.value)} />
           )}
           <input type="email" placeholder="Email" value={email} onChange={(e) => setEmail(e.target.value)} required />
-          <input type="password" placeholder="Password" value={password} onChange={(e) => setPassword(e.target.value)} required />
-          <button type="submit" className="modal-submit-btn">{mode === 'signin' ? 'Sign In' : 'Create Account'}</button>
+          <input type="password" placeholder="Password" value={password} onChange={(e) => setPassword(e.target.value)} required minLength={6} />
+          <button type="submit" className="modal-submit-btn" disabled={submitting}>
+            {submitting ? 'Please wait...' : (mode === 'signin' ? 'Sign In' : 'Create Account')}
+          </button>
         </form>
 
         <p className="modal-switch">
           {mode === 'signin' ? (
-            <>Don't have an account? <button type="button" onClick={() => setMode('signup')}>Sign up</button></>
+            <>Don't have an account? <button type="button" onClick={() => { setMode('signup'); setErrorMsg(null) }}>Sign up</button></>
           ) : (
-            <>Already have an account? <button type="button" onClick={() => setMode('signin')}>Sign in</button></>
+            <>Already have an account? <button type="button" onClick={() => { setMode('signin'); setErrorMsg(null) }}>Sign in</button></>
           )}
         </p>
       </div>

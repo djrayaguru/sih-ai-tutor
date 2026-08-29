@@ -282,3 +282,8 @@ body { margin: 0; font-family: 'Plus Jakarta Sans', sans-serif; background: var(
 .prereq-gate-label { font-size: 11px; font-weight: 700; color: var(--primary); margin-bottom: 8px; }
 
 .quiz-math-heading p, .quiz-math-explanation p, .quiz-option p, .option p { margin: 0; display: inline; }
+
+
+.solution-toggle-btn { margin-top: 10px; padding: 8px 14px; background: none; border: 1px dashed var(--primary); color: var(--primary); border-radius: 8px; cursor: pointer; font-family: inherit; font-size: 12px; font-weight: 600; }
+.solution-box { margin-top: 10px; padding: 12px; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; font-size: 13px; }
+.modal-error { background: var(--error-bg); border: 1px solid var(--error-border); color: #9a3412; padding: 10px 14px; border-radius: 10px; font-size: 13px; margin-bottom: 14px; }

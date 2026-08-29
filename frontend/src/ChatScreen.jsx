@@ -4,6 +4,7 @@ import remarkMath from 'remark-math'
 import remarkGfm from 'remark-gfm'
 import rehypeKatex from 'rehype-katex'
 import 'katex/dist/katex.min.css'
+import { API_BASE_URL } from './config'
 import './App.css'
 
 const KNOWN_TOPICS = ['linear equation', 'binomial theorem', 'probability']
@@ -31,6 +32,14 @@ function logAttempt(topic, correct, question) {
   const existing = JSON.parse(localStorage.getItem('student-progress-log') || '[]')
   existing.push({ topic, correct, question, timestamp: Date.now() })
   localStorage.setItem('student-progress-log', JSON.stringify(existing))
+}
+
+function MathText({ children }) {
+  return (
+    <ReactMarkdown remarkPlugins={[remarkMath, remarkGfm]} rehypePlugins={[rehypeKatex]}>
+      {children}
+    </ReactMarkdown>
+  )
 }
 
 function ChatScreen({ pendingQuestion, onConsumePending }) {
@@ -75,7 +84,7 @@ function ChatScreen({ pendingQuestion, onConsumePending }) {
     }))
 
     try {
-      const res = await fetch('http://localhost:8000/api/ask', {
+      const res = await fetch(`${API_BASE_URL}/api/ask`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ query, student_id: getStudentId() })
@@ -84,6 +93,12 @@ function ChatScreen({ pendingQuestion, onConsumePending }) {
 
       if (data.refused) {
         updateActiveMessages(msgs => [...msgs.filter(m => m.type !== 'thinking'), { sender: 'bot', type: 'refusal', text: data.answer }])
+      } else if (data.gated) {
+        updateActiveMessages(msgs => [...msgs.filter(m => m.type !== 'thinking'), {
+          sender: 'bot', type: 'prereq-gate',
+          prereqQuestion: data.prereq_question, prereqOptions: data.prereq_options, prereqCorrectIndex: data.prereq_correct_index,
+          fullAnswer: data.full_answer, answered: false, selectedIndex: null
+        }])
       } else {
         const newMsgs = [{
           sender: 'bot', type: 'answer', text: data.answer,
@@ -95,14 +110,23 @@ function ChatScreen({ pendingQuestion, onConsumePending }) {
         updateActiveMessages(msgs => [...msgs.filter(m => m.type !== 'thinking'), ...newMsgs])
       }
     } catch {
-      updateActiveMessages(msgs => [...msgs.filter(m => m.type !== 'thinking'), { sender: 'bot', type: 'refusal', text: "Couldn't reach the tutor server. Make sure it's running (uvicorn api:app --reload --port 8000)." }])
+      updateActiveMessages(msgs => [...msgs.filter(m => m.type !== 'thinking'), { sender: 'bot', type: 'refusal', text: "Couldn't reach the tutor server. Make sure it's running." }])
     }
+  }
+
+  function handlePrereqAnswer(messageIndex, optionIndex) {
+    const msg = activeSession.messages[messageIndex]
+    if (msg.answered) return
+    updateActiveMessages(msgs => msgs.map((m, i) => i === messageIndex ? { ...m, answered: true, selectedIndex: optionIndex } : m))
+    setTimeout(() => {
+      updateActiveMessages(msgs => [...msgs, { sender: 'bot', type: 'answer', text: msg.fullAnswer, awaitingFeedback: true, feedbackResolved: false }])
+    }, 500)
   }
 
   async function handleFeedback(messageIndex, understood) {
     updateActiveMessages(msgs => msgs.map((m, i) => i === messageIndex ? { ...m, submittingFeedback: true } : m))
     try {
-      const res = await fetch('http://localhost:8000/api/ask/feedback', {
+      const res = await fetch(`${API_BASE_URL}/api/ask/feedback`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ student_id: getStudentId(), understood })
@@ -124,7 +148,7 @@ function ChatScreen({ pendingQuestion, onConsumePending }) {
   async function startQuiz(topic) {
     updateActiveMessages(msgs => [...msgs.filter(m => m.type !== 'quiz-generating'), { sender: 'bot', type: 'quiz-generating', topic }])
     try {
-      const res = await fetch('http://localhost:8000/api/practice/generate', {
+      const res = await fetch(`${API_BASE_URL}/api/practice/generate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ topic, student_id: getStudentId() })
@@ -136,8 +160,9 @@ function ChatScreen({ pendingQuestion, onConsumePending }) {
       }
       updateActiveMessages(msgs => [...msgs.filter(m => m.type !== 'quiz-generating'), {
         sender: 'bot', type: 'quiz-open', topic: data.topic, difficulty: data.difficulty,
-        question: data.question, options: data.options, correct_index: data.correct_index, explanation: data.explanation,
-        answered: false, selectedIndex: null, correct: null, prerequisiteSuggestion: null
+        question: data.question, options: data.options, correct_index: data.correct_index,
+        explanation: data.explanation, solution: data.solution,
+        answered: false, selectedIndex: null, correct: null, prerequisiteSuggestion: null, showSolution: false
       }])
     } catch {
       updateActiveMessages(msgs => [...msgs.filter(m => m.type !== 'quiz-generating'), { sender: 'bot', type: 'refusal', text: "Couldn't reach the tutor server to generate a question." }])
@@ -153,7 +178,7 @@ function ChatScreen({ pendingQuestion, onConsumePending }) {
     logAttempt(msg.topic, correct, msg.question)
 
     try {
-      const res = await fetch('http://localhost:8000/api/practice/log', {
+      const res = await fetch(`${API_BASE_URL}/api/practice/log`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ student_id: getStudentId(), topic: msg.topic, correct, difficulty: msg.difficulty })
@@ -165,6 +190,10 @@ function ChatScreen({ pendingQuestion, onConsumePending }) {
     } catch {
       // logging failure shouldn't block the UI
     }
+  }
+
+  function toggleSolution(messageIndex) {
+    updateActiveMessages(msgs => msgs.map((m, i) => i === messageIndex ? { ...m, showSolution: !m.showSolution } : m))
   }
 
   function handleNewChat() {
@@ -191,11 +220,34 @@ function ChatScreen({ pendingQuestion, onConsumePending }) {
               return <div key={index} className="message bot thinking">Generating a question on {msg.topic}...</div>
             }
 
+            if (msg.type === 'prereq-gate') {
+              return (
+                <div key={index} className="message bot prereq-gate">
+                  <div className="prereq-gate-label">✨ Quick check before we dive in</div>
+                  <div className="quiz-problem-text"><MathText>{msg.prereqQuestion}</MathText></div>
+                  <div className="quiz-options">
+                    {msg.prereqOptions.map((opt, i) => {
+                      let cls = 'quiz-option'
+                      if (msg.answered) {
+                        if (i === msg.prereqCorrectIndex) cls += ' correct'
+                        else if (i === msg.selectedIndex) cls += ' wrong'
+                      }
+                      return (
+                        <button key={i} className={cls} disabled={msg.answered} onClick={() => handlePrereqAnswer(index, i)}>
+                          <MathText>{opt}</MathText>
+                        </button>
+                      )
+                    })}
+                  </div>
+                </div>
+              )
+            }
+
             if (msg.type === 'quiz-open') {
               return (
                 <div key={index} className="message bot quiz">
                   <div className="quiz-level-tag">{msg.difficulty?.toUpperCase()}</div>
-                  <div className="quiz-problem-text">{msg.question}</div>
+                  <div className="quiz-problem-text"><MathText>{msg.question}</MathText></div>
                   <div className="quiz-options">
                     {msg.options.map((opt, i) => {
                       let cls = 'quiz-option'
@@ -205,7 +257,7 @@ function ChatScreen({ pendingQuestion, onConsumePending }) {
                       }
                       return (
                         <button key={i} className={cls} disabled={msg.answered} onClick={() => handleQuizAnswer(index, i)}>
-                          {opt}
+                          <MathText>{opt}</MathText>
                         </button>
                       )
                     })}
@@ -214,7 +266,15 @@ function ChatScreen({ pendingQuestion, onConsumePending }) {
                   {msg.answered && (
                     <div className={`quiz-feedback ${msg.correct ? 'correct' : 'wrong'}`}>
                       <div>{msg.correct ? '✅ Correct!' : '❌ Not quite.'}</div>
-                      {msg.explanation && <div>{msg.explanation}</div>}
+                      {msg.explanation && <div><MathText>{msg.explanation}</MathText></div>}
+                      {msg.solution && (
+                        <>
+                          <button className="solution-toggle-btn" onClick={() => toggleSolution(index)}>
+                            {msg.showSolution ? 'Hide full solution' : 'See full worked solution'}
+                          </button>
+                          {msg.showSolution && <div className="solution-box"><MathText>{msg.solution}</MathText></div>}
+                        </>
+                      )}
                       {msg.prerequisiteSuggestion && (
                         <div className="prerequisite-box">
                           <p>💡 This often depends on understanding <strong>{msg.prerequisiteSuggestion}</strong> — worth reviewing that first.</p>
@@ -239,9 +299,7 @@ function ChatScreen({ pendingQuestion, onConsumePending }) {
             if (msg.type === 'answer') {
               return (
                 <div key={index} className="message bot answer">
-                  <ReactMarkdown remarkPlugins={[remarkMath, remarkGfm]} rehypePlugins={[rehypeKatex]}>
-                    {msg.text}
-                  </ReactMarkdown>
+                  <MathText>{msg.text}</MathText>
                   {msg.awaitingFeedback && !msg.feedbackResolved && (
                     <div className="understanding-check">
                       <span>Did that make sense?</span>
@@ -255,9 +313,7 @@ function ChatScreen({ pendingQuestion, onConsumePending }) {
 
             return (
               <div key={index} className={`message ${msg.sender} ${msg.type}`}>
-                <ReactMarkdown remarkPlugins={[remarkMath, remarkGfm]} rehypePlugins={[rehypeKatex]}>
-                  {msg.text}
-                </ReactMarkdown>
+                <MathText>{msg.text}</MathText>
               </div>
             )
           })}

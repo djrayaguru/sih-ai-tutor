@@ -41,6 +41,15 @@ def init_db():
             timestamp TEXT NOT NULL
         )
     """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            email TEXT NOT NULL UNIQUE,
+            hashed_password TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )
+    """)
     conn.commit()
     conn.close()
 
@@ -99,6 +108,21 @@ def clear_conversation_history(student_id):
     conn.commit()
     conn.close()
 
+def create_user(name, email, hashed_password):
+    conn = get_connection()
+    conn.execute(
+        "INSERT INTO users (name, email, hashed_password, created_at) VALUES (?, ?, ?, ?)",
+        (name, email, hashed_password, datetime.now().isoformat())
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_user_by_email(email):
+    conn = get_connection()
+    row = conn.execute("SELECT * FROM users WHERE email = ?", (email,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
 
 # Ensures the tables exist the moment this module is imported anywhere,
 # so nobody has to remember a separate setup step.

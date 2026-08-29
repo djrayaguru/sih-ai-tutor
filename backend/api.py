@@ -5,6 +5,7 @@ import json
 import re
 import time
 import uuid
+import auth
 
 import faiss
 from sentence_transformers import SentenceTransformer
@@ -33,7 +34,7 @@ llm = genai.GenerativeModel("gemini-3.6-flash")
 app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
-    allow_origin_regex=r"http://(localhost|127\.0\.0\.1):\d+",
+    allow_origin_regex=r"http://(localhost|127\.0\.0\.1):\d+|https://.*\.vercel\.app",
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -67,6 +68,25 @@ def retrieve(query, top_k=3):
 def extract_json(text):
     text = re.sub(r"^```json\s*|\s*```$", "", text.strip())
     return json.loads(text)
+
+
+def fix_unwrapped_latex(text):
+    """Gemini sometimes forgets to wrap a line of LaTeX in $...$ even when
+    instructed to. Auto-wrap any line that contains raw LaTeX commands
+    (\\frac, \\left, \\times, etc.) but no $ delimiters at all."""
+    if not text:
+        return text
+
+    latex_command_pattern = re.compile(r"\\[a-zA-Z]+|[\^_]\{")
+
+    def fix_line(line):
+        if "$" in line:
+            return line  # already has at least one delimiter, leave it alone
+        if latex_command_pattern.search(line):
+            return f"${line.strip()}$"
+        return line
+
+    return "\n".join(fix_line(line) for line in text.split("\n"))
 
 
 def normalize_topic(topic):
@@ -231,56 +251,20 @@ Student question: {query}
 Answer:"""
 
 
-GATED_PATTERN = re.compile(r"PREREQ_CHECK:\s*(\{.*?\})\s*FULL_ANSWER:\s*(.*)", re.DOTALL)
-
-
-def build_gated_concept_prompt(query, context, topic, prerequisite):
-    return f"""You are a patient, encouraging tutor. A student is about to ask about "{topic}", which depends on
-understanding "{prerequisite}" first. Before diving in, quickly check whether they remember it.
-
-Using ONLY the context below, produce TWO things:
-
-1. A short multiple-choice check-in question testing whether the student recalls or understands
-"{prerequisite}" — exactly 2 answer options, only one correct, quick and low-stakes.
-
-2. The complete teaching explanation answering the student's actual question about "{topic}":
-- Format ALL mathematical notation using LaTeX wrapped in dollar signs (e.g. $\\frac{{A}}{{B}}$, $x^2$).
-- Do NOT copy sentences directly from the context — teach it in your own words like a real tutor.
-- Open with a relatable analogy or why it matters, give a plain-language explanation, break down any
-  formula piece by piece, and walk through one concrete worked example step by step.
-- Use short markdown headers (###) for each section, short paragraphs (2-3 sentences max), and bullet
-  lists whenever presenting more than one related case — never a dense wall of text.
-- Always mention which page number(s) your explanation comes from.
-- End by asking: "Did that make sense?"
-- If the context does not contain enough information, say so clearly.
+def build_prereq_check_prompt(topic, prerequisite, context):
+    return f"""Using ONLY the context below, write a short multiple-choice check-in question testing
+whether a student recalls or understands "{prerequisite}" — a concept that "{topic}" depends on.
+Write exactly 2 answer options, only one correct, quick and low-stakes.
 
 Context:
 {context}
 
-Student question: {query}
-
-Respond in EXACTLY this format and nothing else — no extra commentary before or after:
-PREREQ_CHECK:
+Respond with ONLY valid JSON in this exact format, no markdown, no extra text:
 {{"question": "...", "options": ["...", "..."], "correct_index": 0}}
-FULL_ANSWER:
-(the full explanation goes here, starting on the next line)"""
-
-
-def parse_gated_response(text):
-    match = GATED_PATTERN.search(text)
-    if not match:
-        raise ValueError("Could not parse gated response format")
-    prereq_data = extract_json(match.group(1))
-    full_answer = match.group(2).strip()
-    return prereq_data, full_answer
+"correct_index" must be the 0-based index into "options" of the correct answer."""
 
 
 asked_problems_by_topic = {}
-
-
-class Message(BaseModel):
-    role: str
-    content: str
 
 
 class AskRequest(BaseModel):
@@ -316,15 +300,15 @@ def ask(req: AskRequest):
 
         if not is_followup and topic and topic in PREREQUISITE_MAP and not topic_already_covered(req.student_id, topic):
             prerequisite = PREREQUISITE_MAP[topic][0]
-            gated_prompt = build_gated_concept_prompt(effective_query, context, topic, prerequisite)
-            prereq_data, full_answer = None, None
+            prereq_data = None
             try:
-                raw = safe_generate(gated_prompt).text
-                prereq_data, full_answer = parse_gated_response(raw)
+                prereq_raw = safe_generate(build_prereq_check_prompt(topic, prerequisite, context)).text
+                prereq_data = extract_json(prereq_raw)
             except Exception as e:
-                print(f"[gated prompt] failed, falling back to normal answer: {e}")
+                print(f"[prereq check] failed, skipping gate: {e}")
 
-            if prereq_data and full_answer:
+            if prereq_data:
+                full_answer = safe_generate(build_concept_prompt(effective_query, context, previous_explanation)).text
                 db.log_conversation(req.student_id, effective_query, context, full_answer)
                 return {
                     "refused": False,
@@ -406,23 +390,32 @@ def generate_problem_endpoint(req: GenerateRequest):
 to test a student's understanding of "{req.topic}".
 - Write exactly 4 answer options, only one of which is correct.
 - The 3 wrong options should be plausible mistakes a student might realistically make, not obviously silly.
-- The question must be solvable using only the concepts in this context.{avoid_block}
+- The question must be solvable using only the concepts in this context.
+- Format ALL mathematical notation using LaTeX wrapped in dollar signs (e.g. $\\frac{{A}}{{B}}$, $x^2$). This applies to the question, all four options, the explanation, and the solution.{avoid_block}
+
+Also write a clear, step-by-step worked solution explaining HOW to arrive at the correct answer —
+written so a student can check their own reasoning against it, regardless of which option they picked.
 
 Context:
 {context}
 
 Respond with ONLY valid JSON in this exact format:
-{{"question": "the question text", "options": ["option A", "option B", "option C", "option D"], "correct_index": 0, "explanation": "one short sentence explaining why the correct answer is right", "topic": "{req.topic}", "difficulty": "{difficulty}"}}
+{{"question": "the question text", "options": ["option A", "option B", "option C", "option D"], "correct_index": 0, "explanation": "one short sentence explaining why the correct answer is right", "solution": "the full step-by-step worked solution", "topic": "{req.topic}", "difficulty": "{difficulty}"}}
 "correct_index" must be the 0-based index into "options" of the correct answer."""
 
     try:
-        raw_response = safe_generate(prompt).text
-        data = extract_json(raw_response)
+      raw_response = safe_generate(prompt).text
+      data = extract_json(raw_response)
     except Exception as e:
         print(f"[generate_problem] failed: {e}")
         return {"error": f"⚠️ {e}"}
 
-    asked_problems_by_topic.setdefault(dedup_key, []).append(data["question"])
+    data["question"] = fix_unwrapped_latex(data["question"])
+    data["options"] = [fix_unwrapped_latex(o) for o in data["options"]]
+    data["explanation"] = fix_unwrapped_latex(data.get("explanation", ""))
+    data["solution"] = fix_unwrapped_latex(data.get("solution", ""))
+
+    asked_problems_by_topic.setdefault(dedup_key, []).append(data["question"])  
 
     return {
         "problem_id": str(uuid.uuid4()),
@@ -430,6 +423,7 @@ Respond with ONLY valid JSON in this exact format:
         "options": data["options"],
         "correct_index": data["correct_index"],
         "explanation": data.get("explanation", ""),
+        "solution": data.get("solution", ""),
         "topic": data["topic"],
         "difficulty": data["difficulty"]
     }
@@ -478,3 +472,37 @@ def get_insights():
         key=lambda x: x["struggle_rate"], reverse=True
     )
     return {"topics": topics, "total_attempts": len(gaps)}
+
+
+class SignupRequest(BaseModel):
+    name: str
+    email: str
+    password: str
+
+
+@app.post("/api/auth/signup")
+def signup(req: SignupRequest):
+    existing = db.get_user_by_email(req.email)
+    if existing:
+        return {"error": "An account with this email already exists."}
+
+    hashed = auth.hash_password(req.password)
+    db.create_user(req.name, req.email, hashed)
+
+    token = auth.create_access_token(req.email)
+    return {"token": token, "name": req.name, "email": req.email}
+
+
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
+
+@app.post("/api/auth/login")
+def login(req: LoginRequest):
+    user = db.get_user_by_email(req.email)
+    if not user or not auth.verify_password(req.password, user["hashed_password"]):
+        return {"error": "Invalid email or password."}
+
+    token = auth.create_access_token(req.email)
+    return {"token": token, "name": user["name"], "email": user["email"]}

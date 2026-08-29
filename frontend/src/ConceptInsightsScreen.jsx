@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import { API_BASE_URL } from './config'
 import './App.css'
 import CircularGauge from './CircularGauge'
 import { RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, Radar, ResponsiveContainer } from 'recharts'
@@ -16,7 +17,7 @@ function ConceptInsightsScreen() {
   const [error, setError] = useState(null)
 
   useEffect(() => {
-    fetch('http://localhost:8000/api/insights')
+    fetch(`${API_BASE_URL}/api/insights`)
       .then(res => res.json())
       .then(setData)
       .catch(() => setError("Couldn't reach the tutor server. Make sure it's running."))

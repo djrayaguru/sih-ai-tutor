@@ -4,6 +4,7 @@ import remarkMath from 'remark-math'
 import remarkGfm from 'remark-gfm'
 import rehypeKatex from 'rehype-katex'
 import 'katex/dist/katex.min.css'
+import { API_BASE_URL } from './config'
 import './App.css'
 
 const TOPICS = [
@@ -54,6 +55,14 @@ function PracticeScreen({ onAskPrerequisite }) {
   const [session, setSession] = useState(loadSession)
   const [loading, setLoading] = useState(false)
   const [errorMsg, setErrorMsg] = useState(null)
+    const [showSolution, setShowSolution] = useState(false)
+  const [prevIndex, setPrevIndex] = useState(session?.currentIndex)
+
+  // Reset showSolution when the question changes, without setState-in-effect.
+  if (session?.currentIndex !== prevIndex) {
+    setPrevIndex(session?.currentIndex)
+    setShowSolution(false)
+  }
 
   useEffect(() => {
     saveSession(session)
@@ -71,7 +80,7 @@ function PracticeScreen({ onAskPrerequisite }) {
     setLoading(true)
     setErrorMsg(null)
     try {
-      const res = await fetch('http://localhost:8000/api/practice/generate', {
+      const res = await fetch(`${API_BASE_URL}/api/practice/generate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ topic: session.topic, student_id: getStudentId() })
@@ -120,7 +129,7 @@ function PracticeScreen({ onAskPrerequisite }) {
     logAttemptLocal(session.topic, correct, currentQuestion.question)
 
     try {
-      const res = await fetch('http://localhost:8000/api/practice/log', {
+      const res = await fetch(`${API_BASE_URL}/api/practice/log`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ student_id: getStudentId(), topic: session.topic, correct, difficulty: currentQuestion.difficulty })
@@ -224,6 +233,14 @@ function PracticeScreen({ onAskPrerequisite }) {
             <div className={`feedback ${currentAnswer.correct ? 'correct' : 'wrong'}`}>
               <p>{currentAnswer.correct ? '✅ Correct!' : '❌ Not quite.'}</p>
               {currentQuestion.explanation && <div className="quiz-math-explanation"><MathText>{currentQuestion.explanation}</MathText></div>}
+              {currentQuestion.solution && (
+                <>
+                  <button className="solution-toggle-btn" onClick={() => setShowSolution(prev => !prev)}>
+                    {showSolution ? 'Hide full solution' : 'See full worked solution'}
+                  </button>
+                  {showSolution && <div className="solution-box"><MathText>{currentQuestion.solution}</MathText></div>}
+                </>
+              )}
               {currentAnswer.prerequisiteSuggestion && (
                 <div className="prerequisite-box">
                   <p>💡 This often depends on understanding <strong>{currentAnswer.prerequisiteSuggestion}</strong> — worth reviewing that first.</p>
