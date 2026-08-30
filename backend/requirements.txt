@@ -1,7 +1,8 @@
 fastapi
 uvicorn
-sentence-transformers
+fastembed
 faiss-cpu
+numpy
 google-generativeai
 python-dotenv
 pypdf

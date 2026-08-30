@@ -1,13 +1,12 @@
 import os
-os.environ["HF_HUB_OFFLINE"] = "1"
 
-import os
 import re
 import json
 import hashlib
 import faiss
+import numpy as np
 from pypdf import PdfReader
-from sentence_transformers import SentenceTransformer
+from fastembed import TextEmbedding
 
 MATERIALS_DIR = "materials"
 CHUNKS_FILE = "chunks.json"
@@ -16,7 +15,7 @@ MANIFEST_FILE = "processed_files.json"
 CHUNK_SIZE_WORDS = 150
 OVERLAP_WORDS = 30
 
-model = SentenceTransformer("all-MiniLM-L6-v2")
+model = TextEmbedding(model_name="sentence-transformers/all-MiniLM-L6-v2")
 
 def file_hash(filepath):
     """Content-based hash so renamed-but-identical files aren't reprocessed,
@@ -124,7 +123,7 @@ def run_ingestion():
 
     print(f"\nEmbedding {len(new_chunks_for_indexing)} new chunks...")
     texts = [c["text"] for c in new_chunks_for_indexing]
-    embeddings = model.encode(texts, show_progress_bar=True, convert_to_numpy=True)
+    embeddings = np.array(list(model.embed(texts)), dtype="float32")
     faiss.normalize_L2(embeddings)
 
     index = load_or_create_index(embeddings.shape[1])

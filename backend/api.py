@@ -1,5 +1,4 @@
 import os
-os.environ["HF_HUB_OFFLINE"] = "1"
 
 import json
 import re
@@ -8,7 +7,8 @@ import uuid
 import auth
 
 import faiss
-from sentence_transformers import SentenceTransformer
+import numpy as np
+from fastembed import TextEmbedding
 import google.generativeai as genai
 from google.api_core.exceptions import ResourceExhausted
 from dotenv import load_dotenv
@@ -28,7 +28,7 @@ with open("chunks.json", "r", encoding="utf-8") as f:
     chunks = json.load(f)
 
 index = faiss.read_index("materials.index")
-embed_model = SentenceTransformer("all-MiniLM-L6-v2")
+embed_model = TextEmbedding(model_name="sentence-transformers/all-MiniLM-L6-v2")
 llm = genai.GenerativeModel("gemini-3.6-flash")
 
 app = FastAPI()
@@ -59,7 +59,7 @@ def safe_generate(prompt, max_retries=5, base_delay=8):
 
 
 def retrieve(query, top_k=3):
-    query_vec = embed_model.encode([query], convert_to_numpy=True)
+    query_vec = np.array(list(embed_model.embed([query])), dtype="float32")
     faiss.normalize_L2(query_vec)
     scores, indices = index.search(query_vec, top_k)
     return [{**chunks[idx], "score": float(score)} for score, idx in zip(scores[0], indices[0])]
@@ -404,8 +404,8 @@ Respond with ONLY valid JSON in this exact format:
 "correct_index" must be the 0-based index into "options" of the correct answer."""
 
     try:
-      raw_response = safe_generate(prompt).text
-      data = extract_json(raw_response)
+        raw_response = safe_generate(prompt).text
+        data = extract_json(raw_response)
     except Exception as e:
         print(f"[generate_problem] failed: {e}")
         return {"error": f"⚠️ {e}"}
@@ -415,7 +415,7 @@ Respond with ONLY valid JSON in this exact format:
     data["explanation"] = fix_unwrapped_latex(data.get("explanation", ""))
     data["solution"] = fix_unwrapped_latex(data.get("solution", ""))
 
-    asked_problems_by_topic.setdefault(dedup_key, []).append(data["question"])  
+    asked_problems_by_topic.setdefault(dedup_key, []).append(data["question"])
 
     return {
         "problem_id": str(uuid.uuid4()),
