@@ -19,7 +19,26 @@ from pydantic import BaseModel
 import db
 
 load_dotenv()
-genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
+
+GEMINI_API_KEYS = [k for k in [os.getenv("GEMINI_API_KEY"), os.getenv("GEMINI_API_KEY_BACKUP")] if k]
+if not GEMINI_API_KEYS:
+    raise RuntimeError("No GEMINI_API_KEY configured in environment variables.")
+
+_key_index = 0
+genai.configure(api_key=GEMINI_API_KEYS[_key_index])
+
+
+def switch_to_next_key():
+    """Rotate to the next configured Gemini API key. Returns True if a fresh
+    key was available to switch to, False if we're already on the last one."""
+    global _key_index
+    if _key_index + 1 >= len(GEMINI_API_KEYS):
+        return False
+    _key_index += 1
+    genai.configure(api_key=GEMINI_API_KEYS[_key_index])
+    print(f"[Quota hit — switched to backup Gemini API key #{_key_index + 1}]")
+    return True
+
 
 CONFIDENCE_THRESHOLD = 0.3
 
@@ -46,6 +65,8 @@ def safe_generate(prompt, max_retries=5, base_delay=8):
         try:
             return llm.generate_content(prompt)
         except ResourceExhausted as e:
+            if switch_to_next_key():
+                continue  # retry immediately on the fresh key, no need to wait
             if "PerDay" in str(e):
                 raise RuntimeError(
                     "Gemini free-tier DAILY quota exhausted. Resets at midnight Pacific Time "
