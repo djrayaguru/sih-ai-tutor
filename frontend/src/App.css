@@ -287,3 +287,20 @@ body { margin: 0; font-family: 'Plus Jakarta Sans', sans-serif; background: var(
 .solution-toggle-btn { margin-top: 10px; padding: 8px 14px; background: none; border: 1px dashed var(--primary); color: var(--primary); border-radius: 8px; cursor: pointer; font-family: inherit; font-size: 12px; font-weight: 600; }
 .solution-box { margin-top: 10px; padding: 12px; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; font-size: 13px; }
 .modal-error { background: var(--error-bg); border: 1px solid var(--error-border); color: #9a3412; padding: 10px 14px; border-radius: 10px; font-size: 13px; margin-bottom: 14px; }
+
+.feedback p,
+.solution-box p {
+  line-height: 2;
+  margin: 0 0 6px 0;
+}
+
+.feedback .katex,
+.solution-box .katex {
+  font-size: 1em;
+}
+
+.feedback .katex-display,
+.solution-box .katex-display {
+  margin: 0.4em 0;
+  overflow-x: auto;
+}
