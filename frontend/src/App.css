@@ -174,6 +174,24 @@ body { margin: 0; font-family: 'Plus Jakarta Sans', sans-serif; background: var(
 .quiz-correct-answer { margin-top: 6px; font-weight: 600; }
 .quiz-feedback .quiz-start-btn { margin-top: 10px; }
 
+
+.feedback p,
+.solution-box p {
+  line-height: 2;
+  margin: 0 0 6px 0;
+}
+
+.feedback .katex,
+.solution-box .katex {
+  font-size: 1em;
+}
+
+.feedback .katex-display,
+.solution-box .katex-display {
+  margin: 0.4em 0;
+  overflow-x: auto;
+}
+
 .prerequisite-box { margin-top: 12px; padding: 12px; background: var(--primary-light); border: 1px solid var(--border); border-radius: 10px; font-size: 13px; color: var(--text); }
 .prerequisite-box p { margin: 0 0 8px 0; }
 .prerequisite-box button { padding: 8px 14px; background: var(--primary); color: white; border: none; border-radius: 8px; cursor: pointer; font-family: inherit; font-weight: 600; font-size: 13px; }
@@ -288,19 +306,3 @@ body { margin: 0; font-family: 'Plus Jakarta Sans', sans-serif; background: var(
 .solution-box { margin-top: 10px; padding: 12px; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; font-size: 13px; }
 .modal-error { background: var(--error-bg); border: 1px solid var(--error-border); color: #9a3412; padding: 10px 14px; border-radius: 10px; font-size: 13px; margin-bottom: 14px; }
 
-.feedback p,
-.solution-box p {
-  line-height: 2;
-  margin: 0 0 6px 0;
-}
-
-.feedback .katex,
-.solution-box .katex {
-  font-size: 1em;
-}
-
-.feedback .katex-display,
-.solution-box .katex-display {
-  margin: 0.4em 0;
-  overflow-x: auto;
-}
