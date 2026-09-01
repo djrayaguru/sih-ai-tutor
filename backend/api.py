@@ -154,8 +154,11 @@ def fix_unwrapped_latex(text):
     return "\n".join(fix_line(line) for line in text.split("\n"))
 
 
+STOPWORDS = {"a", "an", "the", "is", "are", "what", "explain", "tell", "me", "can", "you", "of", "in", "to", "and", "how", "do", "does"}
+
 def normalize_topic(topic):
-    return set(re.findall(r"[a-z0-9]+", topic.lower()))
+    words = re.findall(r"[a-z0-9]+", topic.lower())
+    return set(w for w in words if w not in STOPWORDS)
 
 
 def topics_match(topic_a, topic_b):
@@ -165,6 +168,10 @@ def topics_match(topic_a, topic_b):
     overlap = words_a & words_b
     return len(overlap) / min(len(words_a), len(words_b)) >= 0.5
 
+def get_relevant_breakthroughs(topic, limit=2):
+    all_breakthroughs = db.get_all_breakthroughs()
+    matching = [b for b in all_breakthroughs if topics_match(b["topic"], topic)]
+    return matching[:limit]
 
 def get_difficulty(student_id, topic):
     student_attempts = db.get_attempts_for_student(student_id)
@@ -261,37 +268,32 @@ If no, respond with ONLY the word: new"""
     return history[index_] if 0 <= index_ < len(history) else None
 
 
-def build_concept_prompt(query, context, previous_explanation=None):
+def build_concept_prompt(query, context, previous_explanation=None, breakthrough_examples=None):
     base_instructions = """You are a warm, enthusiastic tutor who genuinely loves helping students have
 "aha" moments. Answer the student's question using ONLY the concepts and facts in the context
 below — do not use outside knowledge.
 
 Format ALL mathematical notation using LaTeX wrapped in dollar signs (e.g. $\\frac{{A}}{{B}}$, $x^2$).
 
-FIRST, determine what the student wants:
-- If they are asking you to SOLVE a specific problem and get a final numeric/algebraic answer
-  (however phrased — including "check my answer", "walk me through this one", a specific
-  numbered question): you must NOT give the final answer anywhere in your response. Teach the
-  METHOD only, walk through their exact problem as the example, stop right before the final
-  step, and encourage them to complete that last step themselves.
-- If they are asking to UNDERSTAND a concept, method, or definition in general (no single
-  specific final answer being sought): teach it fully using the approach below.
-
-FORMATTING RULES — this matters a lot, follow it strictly:
-- Use a short markdown header (###) for each major section (e.g. "### The Idea", "### Worked Example", "### Watch Out For").
-- Keep every paragraph to 2-3 sentences MAX. If you have more to say, start a new paragraph or use a bullet list instead.
-- If you're presenting more than one related case or example (like "what if X" / "what if Y"), ALWAYS use a bullet list, one bullet per case — never cram them into one paragraph.
-- Always leave the content feeling spacious and easy to scan, never a dense wall of text.
-
 Teach like a real tutor sitting next to the student, not a textbook:
 1. Open with a relatable, everyday analogy or a one-line reason this concept actually matters.
 2. Give a simple, plain-language explanation of the idea.
 3. Break down any formula or definition piece by piece.
-4. Walk through one concrete worked example, step by step, thinking out loud (for solve-requests, stop right before the final answer as instructed above).
-5. If the context includes a common mix-up or edge case, mention it briefly and warmly, as a bullet list if there's more than one.
+4. Walk through one concrete worked example, step by step, thinking out loud.
+5. If the context includes a common mix-up or edge case, mention it briefly and warmly.
 6. End by asking: "Did that make sense?"
 
 Keep the tone encouraging and human. Do not just copy the textbook's wording."""
+
+    if breakthrough_examples:
+        examples_text = "\n\n".join(f"- {b['explanation'][:400]}..." for b in breakthrough_examples)
+        base_instructions += f"""
+
+Here are explanations that previously helped OTHER students finally understand a similar topic:
+{examples_text}
+
+You may draw inspiration from the analogy or framing style used above if it fits, but do NOT copy
+it verbatim — adapt it naturally to this student's specific question and this context."""
 
     if previous_explanation:
         base_instructions += f"""
@@ -347,7 +349,7 @@ def ask(req: AskRequest):
             effective_query = target["query"]
             previous_explanation = target["explanation"]
             is_followup = True
-            topic = None
+            breakthroughs = None
         else:
             results = retrieve(req.query)
             top_score = results[0]["score"]
@@ -359,45 +361,19 @@ def ask(req: AskRequest):
             effective_query = req.query
             previous_explanation = None
             is_followup = False
-            topic = detect_topic(req.query)
+            breakthroughs = get_relevant_breakthroughs(req.query)
 
-        sources = extract_sources_from_context(context)
-
-        if not is_followup and topic and topic in PREREQUISITE_MAP and not topic_already_covered(req.student_id, topic):
-            prerequisite = PREREQUISITE_MAP[topic][0]
-            prereq_data = None
-            try:
-                prereq_raw = safe_generate(build_prereq_check_prompt(topic, prerequisite, context), json_mode=True).text
-                prereq_data = extract_json(prereq_raw)
-            except Exception as e:
-                print(f"[prereq check] failed, skipping gate: {e}")
-
-            if prereq_data:
-                full_answer = safe_generate(build_concept_prompt(effective_query, context, previous_explanation)).text
-                db.log_conversation(req.student_id, effective_query, context, full_answer)
-                return {
-                    "refused": False,
-                    "gated": True,
-                    "prereq_question": prereq_data["question"],
-                    "prereq_options": prereq_data["options"],
-                    "prereq_correct_index": prereq_data["correct_index"],
-                    "full_answer": full_answer,
-                    "sources": sources,
-                    "awaiting_feedback": True
-                }
-
-        prompt = build_concept_prompt(effective_query, context, previous_explanation)
+        prompt = build_concept_prompt(effective_query, context, previous_explanation, breakthroughs)
         response = safe_generate(prompt)
 
         db.log_conversation(req.student_id, effective_query, context, response.text)
 
         return {
-            "refused": False,
-            "gated": False,
-            "answer": response.text,
-            "is_followup": is_followup,
-            "sources": sources,
-            "awaiting_feedback": True
+        "refused": False,
+        "answer": response.text,
+        "is_followup": is_followup,
+        "used_breakthrough": bool(breakthroughs),
+        "awaiting_feedback": True
         }
     except Exception as e:
         print(f"[/api/ask] failed: {e}")
@@ -418,6 +394,7 @@ def ask_feedback(req: FeedbackRequest):
     last = history[-1]
 
     if req.understood:
+        db.log_breakthrough(last["query"], last["explanation"])
         return {"message": "Awesome! Glad that clicked. 🎉"}
 
     try:

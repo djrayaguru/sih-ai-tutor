@@ -50,6 +50,14 @@ def init_db():
             created_at TEXT NOT NULL
         )
     """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS breakthroughs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            topic TEXT NOT NULL,
+            explanation TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )
+    """)
     conn.commit()
     conn.close()
 
@@ -124,6 +132,21 @@ def get_user_by_email(email):
     conn.close()
     return dict(row) if row else None
 
+def log_breakthrough(topic, explanation):
+    conn = get_connection()
+    conn.execute(
+        "INSERT INTO breakthroughs (topic, explanation, created_at) VALUES (?, ?, ?)",
+        (topic, explanation, datetime.now().isoformat())
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_all_breakthroughs():
+    conn = get_connection()
+    rows = conn.execute("SELECT * FROM breakthroughs ORDER BY id DESC").fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
 # Ensures the tables exist the moment this module is imported anywhere,
 # so nobody has to remember a separate setup step.
 init_db()

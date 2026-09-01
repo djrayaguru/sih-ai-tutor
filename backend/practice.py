@@ -68,10 +68,11 @@ def retrieve(query, top_k=3):
     return [{**chunks[idx], "score": float(score)} for score, idx in zip(scores[0], indices[0])]
 
 
+STOPWORDS = {"a", "an", "the", "is", "are", "what", "explain", "tell", "me", "can", "you", "of", "in", "to", "and", "how", "do", "does"}
+
 def normalize_topic(topic):
-    """Lowercase and strip to bare words, so 'Linear Equations!' and 'linear equation' compare fairly."""
     words = re.findall(r"[a-z0-9]+", topic.lower())
-    return set(words)
+    return set(w for w in words if w not in STOPWORDS)
 
 
 def topics_match(topic_a, topic_b):
