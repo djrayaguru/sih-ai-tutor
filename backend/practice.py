@@ -18,16 +18,27 @@ genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 CONFIDENCE_THRESHOLD = 0.3
 
 
-def safe_generate(prompt, max_retries=5, base_delay=8):
+JSON_GENERATION_CONFIG = genai.GenerationConfig(response_mime_type="application/json")
+
+
+def safe_generate(prompt, max_retries=5, base_delay=8, json_mode=False):
     """
     Retry-with-backoff for free-tier rate limits. A per-DAY quota can't be
     fixed by waiting a few minutes, so we fail fast with a clear message
     instead of burning time on retries that can't succeed.
+
+    json_mode=True constrains Gemini's output to syntactically valid JSON
+    (response_mime_type="application/json"). This is what actually prevents
+    'Invalid \\escape' crashes: asking for LaTeX like \\frac{A}{B} inside a
+    JSON string via prompt instructions alone isn't enough — the model needs
+    to be told, at the API level, that backslashes must be escaped as \\\\ to
+    stay valid JSON. Only pass this for prompts parsed with extract_json().
     """
     delay = base_delay
+    generation_config = JSON_GENERATION_CONFIG if json_mode else None
     for attempt in range(max_retries):
         try:
-            return llm.generate_content(prompt)
+            return llm.generate_content(prompt, generation_config=generation_config)
         except ResourceExhausted as e:
             if "PerDay" in str(e):
                 raise RuntimeError(
@@ -99,10 +110,43 @@ def get_difficulty(student_id, topic):
         return "medium"
 
 
+_LEGAL_LONE_ESCAPES = set('"\\/')
+
+
+def sanitize_json_backslashes(text):
+    """Safety net for when the model still emits a raw, non-JSON-escaped
+    backslash — e.g. LaTeX like \\frac{A}{B} or \\times — despite json_mode.
+    json.loads only accepts \\", \\\\, \\/, \\b, \\f, \\n, \\r, \\t, and a
+    well-formed \\uXXXX as escapes; anything else raises 'Invalid \\escape'.
+
+    We can't just "leave valid escapes alone": LaTeX commands routinely start
+    with the very letters JSON treats as control-char escapes (\\frac, \\times,
+    \\right, \\begin, \\nabla, ...), so naively trusting \\f/\\t/\\n/\\r/\\b would
+    silently corrupt them into form-feed/tab/newline/etc. characters instead of
+    leaving the LaTeX intact. Instead, only \\", \\\\, \\/ and a real \\uXXXX
+    (checked for 4 hex digits) are treated as intentional; every other \\X is
+    doubled so it survives as a literal backslash. Trade-off: a genuine \\n/\\t/
+    etc. control-char escape from the model would also get doubled into a
+    literal two-character "\\n" rather than an actual newline — acceptable
+    since json_mode should make the model escape correctly in the first
+    place; this only runs as a fallback."""
+    def fix(match):
+        nxt = match.group(1)
+        if nxt in _LEGAL_LONE_ESCAPES:
+            return match.group(0)
+        if nxt == "u" and re.fullmatch(r"[0-9a-fA-F]{4}", match.string[match.end():match.end() + 4]):
+            return match.group(0)
+        return "\\\\" + nxt
+    return re.sub(r"\\(.)", fix, text)
+
+
 def extract_json(text):
     """LLMs sometimes wrap JSON in markdown fences — strip those before parsing."""
     text = re.sub(r"^```json\s*|\s*```$", "", text.strip())
-    return json.loads(text)
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        return json.loads(sanitize_json_backslashes(text))
 
 
 def generate_problem(topic, student_id):
@@ -129,7 +173,7 @@ Context:
 Respond with ONLY valid JSON, no markdown, no extra text, in this exact format:
 {{"problem": "the question text", "answer": "the correct answer", "topic": "{topic}", "difficulty": "{difficulty}"}}"""
 
-    response = safe_generate(prompt)
+    response = safe_generate(prompt, json_mode=True)
     try:
         return extract_json(response.text)
     except Exception as e:
@@ -152,7 +196,7 @@ right answer. Walk through the reasoning step by step, not just the final calcul
 Respond with ONLY valid JSON in this exact format:
 {{"correct": true or false, "feedback": "one short sentence on whether they got it right", "solution": "the full step-by-step worked solution"}}"""
 
-    response = safe_generate(prompt)
+    response = safe_generate(prompt, json_mode=True)
     try:
         return extract_json(response.text)
     except Exception as e:

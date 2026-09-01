@@ -59,11 +59,22 @@ app.add_middleware(
 )
 
 
-def safe_generate(prompt, max_retries=5, base_delay=8):
+JSON_GENERATION_CONFIG = genai.GenerationConfig(response_mime_type="application/json")
+
+
+def safe_generate(prompt, max_retries=5, base_delay=8, json_mode=False):
+    """json_mode=True tells Gemini's API to constrain its output to syntactically
+    valid JSON (response_mime_type="application/json"). This is what actually fixes
+    'Invalid \\escape' crashes: prompt instructions asking for LaTeX like \\frac{A}{B}
+    inside a JSON string are not enough on their own — the model needs to be told, at
+    the API level, that backslashes must be escaped as \\\\ to stay valid JSON. Only
+    pass this for prompts whose response will be parsed with extract_json(); plain
+    text answers should keep the default."""
     delay = base_delay
+    generation_config = JSON_GENERATION_CONFIG if json_mode else None
     for attempt in range(max_retries):
         try:
-            return llm.generate_content(prompt)
+            return llm.generate_content(prompt, generation_config=generation_config)
         except ResourceExhausted as e:
             if switch_to_next_key():
                 continue  # retry immediately on the fresh key, no need to wait
@@ -86,9 +97,42 @@ def retrieve(query, top_k=3):
     return [{**chunks[idx], "score": float(score)} for score, idx in zip(scores[0], indices[0])]
 
 
+_LEGAL_LONE_ESCAPES = set('"\\/')
+
+
+def sanitize_json_backslashes(text):
+    """Safety net for when the model still emits a raw, non-JSON-escaped
+    backslash — e.g. LaTeX like \\frac{A}{B} or \\times — despite json_mode.
+    json.loads only accepts \\", \\\\, \\/, \\b, \\f, \\n, \\r, \\t, and a
+    well-formed \\uXXXX as escapes; anything else raises 'Invalid \\escape'.
+
+    We can't just "leave valid escapes alone": LaTeX commands routinely start
+    with the very letters JSON treats as control-char escapes (\\frac, \\times,
+    \\right, \\begin, \\nabla, ...), so naively trusting \\f/\\t/\\n/\\r/\\b would
+    silently corrupt them into form-feed/tab/newline/etc. characters instead of
+    leaving the LaTeX intact. Instead, only \\", \\\\, \\/ and a real \\uXXXX
+    (checked for 4 hex digits) are treated as intentional; every other \\X is
+    doubled so it survives as a literal backslash. Trade-off: a genuine \\n/\\t/
+    etc. control-char escape from the model (e.g. a newline inside "solution")
+    would also get doubled into a literal two-character "\\n" rather than an
+    actual newline. That's acceptable here because json_mode should make the
+    model escape correctly in the first place — this only runs as a fallback."""
+    def fix(match):
+        nxt = match.group(1)
+        if nxt in _LEGAL_LONE_ESCAPES:
+            return match.group(0)
+        if nxt == "u" and re.fullmatch(r"[0-9a-fA-F]{4}", match.string[match.end():match.end() + 4]):
+            return match.group(0)
+        return "\\\\" + nxt
+    return re.sub(r"\\(.)", fix, text)
+
+
 def extract_json(text):
     text = re.sub(r"^```json\s*|\s*```$", "", text.strip())
-    return json.loads(text)
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        return json.loads(sanitize_json_backslashes(text))
 
 
 def fix_unwrapped_latex(text):
@@ -323,7 +367,7 @@ def ask(req: AskRequest):
             prerequisite = PREREQUISITE_MAP[topic][0]
             prereq_data = None
             try:
-                prereq_raw = safe_generate(build_prereq_check_prompt(topic, prerequisite, context)).text
+                prereq_raw = safe_generate(build_prereq_check_prompt(topic, prerequisite, context), json_mode=True).text
                 prereq_data = extract_json(prereq_raw)
             except Exception as e:
                 print(f"[prereq check] failed, skipping gate: {e}")
@@ -425,8 +469,11 @@ Respond with ONLY valid JSON in this exact format:
 "correct_index" must be the 0-based index into "options" of the correct answer."""
 
     try:
-        raw_response = safe_generate(prompt).text
+        raw_response = safe_generate(prompt, json_mode=True).text
         data = extract_json(raw_response)
+    except json.JSONDecodeError as e:
+        print(f"[generate_problem] JSON parse failed: {e}\nRaw response: {raw_response!r}")
+        return {"error": "⚠️ Couldn't generate a valid question that time. Please try again."}
     except Exception as e:
         print(f"[generate_problem] failed: {e}")
         return {"error": f"⚠️ {e}"}
