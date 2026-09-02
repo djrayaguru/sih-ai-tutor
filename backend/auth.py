@@ -23,15 +23,23 @@ def verify_password(plain_password, hashed_password):
     return bcrypt.checkpw(pw_bytes, hashed_password.encode("utf-8"))
 
 
-def create_access_token(email):
+def create_access_token(email, role="student"):
+    """role is embedded in the token (not just looked up from the DB on every
+    request) so teacher-only endpoints can check it directly off the decoded
+    token without an extra DB round-trip per request."""
     expire = datetime.utcnow() + timedelta(hours=TOKEN_EXPIRE_HOURS)
-    payload = {"sub": email, "exp": expire}
+    payload = {"sub": email, "role": role, "exp": expire}
     return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
 
 
 def decode_access_token(token):
+    """Returns {"email": ..., "role": ...} or None if the token is missing/invalid/expired.
+    Tokens issued before the 'role' claim existed decode with role defaulting to 'student'."""
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        return payload.get("sub")
+        email = payload.get("sub")
+        if not email:
+            return None
+        return {"email": email, "role": payload.get("role", "student")}
     except JWTError:
         return None

@@ -17,6 +17,7 @@ function LoginModal({ onClose, onLogin }) {
   const [name, setName] = useState('')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
+  const [role, setRole] = useState('student')
   const [submitting, setSubmitting] = useState(false)
   const [errorMsg, setErrorMsg] = useState(null)
 
@@ -28,7 +29,7 @@ function LoginModal({ onClose, onLogin }) {
 
     const endpoint = mode === 'signup' ? '/api/auth/signup' : '/api/auth/login'
     const body = mode === 'signup'
-      ? { name: name.trim() || email.split('@')[0], email: email.trim(), password }
+      ? { name: name.trim() || email.split('@')[0], email: email.trim(), password, role }
       : { email: email.trim(), password }
 
     try {
@@ -42,7 +43,7 @@ function LoginModal({ onClose, onLogin }) {
       if (data.error) {
         setErrorMsg(data.error)
       } else {
-        onLogin({ name: data.name, email: data.email, picture: null, token: data.token })
+        onLogin({ name: data.name, email: data.email, role: data.role || 'student', picture: null, token: data.token })
       }
     } catch {
       setErrorMsg("Couldn't reach the server. Make sure the backend is running.")
@@ -51,7 +52,7 @@ function LoginModal({ onClose, onLogin }) {
   }
 
   function handleGoogleFake() {
-    onLogin({ name: 'Demo Student', email: 'demo.student@gmail.com', picture: null, token: null })
+    onLogin({ name: 'Demo Student', email: 'demo.student@gmail.com', role: 'student', picture: null, token: null })
   }
 
   return (
@@ -75,7 +76,19 @@ function LoginModal({ onClose, onLogin }) {
 
         <form onSubmit={handleSubmit} className="modal-form">
           {mode === 'signup' && (
-            <input type="text" placeholder="Full name" value={name} onChange={(e) => setName(e.target.value)} />
+            <>
+              <input type="text" placeholder="Full name" value={name} onChange={(e) => setName(e.target.value)} />
+              <div className="role-picker">
+                <label className={role === 'student' ? 'role-option active' : 'role-option'}>
+                  <input type="radio" name="role" value="student" checked={role === 'student'} onChange={() => setRole('student')} />
+                  I'm a Student
+                </label>
+                <label className={role === 'teacher' ? 'role-option active' : 'role-option'}>
+                  <input type="radio" name="role" value="teacher" checked={role === 'teacher'} onChange={() => setRole('teacher')} />
+                  I'm a Teacher
+                </label>
+              </div>
+            </>
           )}
           <input type="email" placeholder="Email" value={email} onChange={(e) => setEmail(e.target.value)} required />
           <input type="password" placeholder="Password" value={password} onChange={(e) => setPassword(e.target.value)} required minLength={6} />

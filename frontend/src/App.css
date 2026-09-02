@@ -306,3 +306,22 @@ body { margin: 0; font-family: 'Plus Jakarta Sans', sans-serif; background: var(
 .solution-box { margin-top: 10px; padding: 12px; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; font-size: 13px; }
 .modal-error { background: var(--error-bg); border: 1px solid var(--error-border); color: #9a3412; padding: 10px 14px; border-radius: 10px; font-size: 13px; margin-bottom: 14px; }
 
+
+/* Role picker (signup: student vs teacher) */
+.role-picker { display: flex; gap: 10px; }
+.role-option { flex: 1; display: flex; align-items: center; justify-content: center; gap: 6px; padding: 10px; border: 1px solid var(--border); border-radius: var(--radius-md); font-size: 13px; font-weight: 600; color: var(--text-muted); cursor: pointer; }
+.role-option.active { border-color: var(--primary); color: var(--primary); background: var(--primary-light); }
+.role-option input { margin: 0; }
+
+/* Chat file attachment button */
+.attach-file-btn { padding: 10px 12px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-md); cursor: pointer; margin-right: var(--space-xs); font-size: 16px; }
+.attach-file-btn:hover { background: var(--primary-light); border-color: var(--primary); }
+
+/* Teacher portal */
+.teacher-tabs { display: flex; gap: 8px; margin-bottom: var(--space-sm); }
+.teacher-tab { padding: 10px 16px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--surface-card); color: var(--text-muted); font-family: inherit; font-weight: 600; font-size: 13px; cursor: pointer; }
+.teacher-tab.active { border-color: var(--primary); color: var(--primary); background: var(--primary-light); }
+.teacher-upload-form { display: flex; flex-direction: column; gap: 10px; max-width: 420px; margin-top: 12px; }
+.teacher-upload-form input[type="text"] { padding: 11px 14px; border: 1px solid var(--border); border-radius: var(--radius-md); font-family: inherit; font-size: 14px; background: var(--surface-card); color: var(--text); }
+.teacher-upload-form input[type="file"] { font-size: 13px; color: var(--text-muted); }
+.upload-success-note { margin-top: 12px; padding: 10px 14px; background: var(--primary-light); border: 1px solid var(--border); border-radius: 10px; font-size: 13px; color: var(--text); }

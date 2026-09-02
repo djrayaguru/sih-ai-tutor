@@ -1,5 +1,6 @@
 """
-SQLite storage for student practice attempts and tutor conversation history.
+SQLite storage for student practice attempts, tutor conversation history,
+users (students + teachers), and teacher-uploaded materials.
 
 Still just a single file (gaps.db) sitting in the backend folder, no server
 to install or configure. What changes vs. flat JSON:
@@ -17,6 +18,15 @@ def get_connection():
     conn = sqlite3.connect(DB_FILE)
     conn.row_factory = sqlite3.Row  # lets us access columns by name, like a dict
     return conn
+
+
+def _add_column_if_missing(conn, table, column, ddl):
+    """SQLite has no 'ADD COLUMN IF NOT EXISTS', so check pragma table_info
+    first. Lets us evolve an existing gaps.db (with real user rows already in
+    it) without anyone having to delete the file and lose their data."""
+    existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+    if column not in existing:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {ddl}")
 
 
 def init_db():
@@ -58,6 +68,23 @@ def init_db():
             created_at TEXT NOT NULL
         )
     """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS materials (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            teacher_email TEXT NOT NULL,
+            subject TEXT NOT NULL,
+            filename TEXT NOT NULL,
+            original_filename TEXT NOT NULL,
+            chunk_count INTEGER NOT NULL,
+            uploaded_at TEXT NOT NULL
+        )
+    """)
+
+    # New in this version: a role column on users ('student' or 'teacher').
+    # Added via migration rather than in the CREATE TABLE above so existing
+    # gaps.db files (with real signups already in them) upgrade in place.
+    _add_column_if_missing(conn, "users", "role", "role TEXT NOT NULL DEFAULT 'student'")
+
     conn.commit()
     conn.close()
 
@@ -116,11 +143,12 @@ def clear_conversation_history(student_id):
     conn.commit()
     conn.close()
 
-def create_user(name, email, hashed_password):
+
+def create_user(name, email, hashed_password, role="student"):
     conn = get_connection()
     conn.execute(
-        "INSERT INTO users (name, email, hashed_password, created_at) VALUES (?, ?, ?, ?)",
-        (name, email, hashed_password, datetime.now().isoformat())
+        "INSERT INTO users (name, email, hashed_password, created_at, role) VALUES (?, ?, ?, ?, ?)",
+        (name, email, hashed_password, datetime.now().isoformat(), role)
     )
     conn.commit()
     conn.close()
@@ -131,6 +159,14 @@ def get_user_by_email(email):
     row = conn.execute("SELECT * FROM users WHERE email = ?", (email,)).fetchone()
     conn.close()
     return dict(row) if row else None
+
+
+def get_all_users():
+    conn = get_connection()
+    rows = conn.execute("SELECT id, name, email, role, created_at FROM users").fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
 
 def log_breakthrough(topic, explanation):
     conn = get_connection()
@@ -147,6 +183,42 @@ def get_all_breakthroughs():
     rows = conn.execute("SELECT * FROM breakthroughs ORDER BY id DESC").fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+
+def create_material(teacher_email, subject, filename, original_filename, chunk_count):
+    conn = get_connection()
+    conn.execute(
+        "INSERT INTO materials (teacher_email, subject, filename, original_filename, chunk_count, uploaded_at) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (teacher_email, subject, filename, original_filename, chunk_count, datetime.now().isoformat())
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_materials_by_teacher(teacher_email):
+    conn = get_connection()
+    rows = conn.execute(
+        "SELECT * FROM materials WHERE teacher_email = ? ORDER BY id DESC", (teacher_email,)
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_all_materials():
+    conn = get_connection()
+    rows = conn.execute("SELECT * FROM materials ORDER BY id DESC").fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_distinct_subjects():
+    conn = get_connection()
+    rows = conn.execute("SELECT DISTINCT subject FROM materials ORDER BY subject ASC").fetchall()
+    conn.close()
+    return [r["subject"] for r in rows]
+
+
 # Ensures the tables exist the moment this module is imported anywhere,
 # so nobody has to remember a separate setup step.
 init_db()

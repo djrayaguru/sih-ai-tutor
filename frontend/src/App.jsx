@@ -4,6 +4,7 @@ import ChatScreen from './ChatScreen'
 import PracticeScreen from './PracticeScreen'
 import DashboardScreen from './DashboardScreen'
 import ConceptInsightsScreen from './ConceptInsightsScreen'
+import TeacherScreen from './TeacherScreen'
 import LoginModal from './LoginModal'
 import './App.css'
 
@@ -16,11 +17,11 @@ const navItems = [
 ]
 
 function App() {
-  const [activeTab, setActiveTab] = useState('home')
   const [user, setUser] = useState(() => {
     const saved = localStorage.getItem('tutor-user')
     return saved ? JSON.parse(saved) : null
   })
+  const [activeTab, setActiveTab] = useState(() => (user?.role === 'teacher' ? 'teacher' : 'home'))
   const [showLoginModal, setShowLoginModal] = useState(false)
   const [showProfileMenu, setShowProfileMenu] = useState(false)
   const [pendingChatQuestion, setPendingChatQuestion] = useState(null)
@@ -39,6 +40,7 @@ function App() {
     setUser(userData)
     localStorage.setItem('tutor-user', JSON.stringify(userData))
     setShowLoginModal(false)
+    if (userData.role === 'teacher') setActiveTab('teacher')
   }
 
   function handleSignOut() {
@@ -52,6 +54,10 @@ function App() {
     setPendingChatQuestion(`Can you explain ${topic}?`)
     setActiveTab('chat')
   }
+
+  const visibleNavItems = user?.role === 'teacher'
+    ? [{ id: 'teacher', label: 'Teacher Portal', icon: 'school' }]
+    : navItems
 
   return (
     <div className="bg-surface-soft text-on-surface h-screen flex flex-col overflow-hidden">
@@ -69,7 +75,7 @@ function App() {
           </div>
 
           <nav className="hidden md:flex items-center gap-1 bg-surface-container/60 rounded-xl p-1">
-            {navItems.map(item => (
+            {visibleNavItems.map(item => (
               <button
                 key={item.id}
                 onClick={() => setActiveTab(item.id)}
@@ -129,10 +135,11 @@ function App() {
         {activeTab === 'practice' && <PracticeScreen onAskPrerequisite={handleAskPrerequisite} />}
         {activeTab === 'dashboard' && <DashboardScreen />}
         {activeTab === 'insights' && <ConceptInsightsScreen />}
+        {activeTab === 'teacher' && user?.role === 'teacher' && <TeacherScreen />}
       </main>
 
       <div className="md:hidden fixed bottom-0 left-0 w-full bg-surface-container-lowest border-t border-outline-variant flex justify-around items-center py-2 px-4 z-50 shadow-[0px_-4px_12px_rgba(0,0,0,0.05)]">
-        {navItems.map(item => (
+        {visibleNavItems.map(item => (
           <button
             key={item.id}
             onClick={() => setActiveTab(item.id)}

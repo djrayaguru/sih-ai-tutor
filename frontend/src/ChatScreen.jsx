@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkMath from 'remark-math'
 import remarkGfm from 'remark-gfm'
@@ -6,8 +6,6 @@ import rehypeKatex from 'rehype-katex'
 import 'katex/dist/katex.min.css'
 import { API_BASE_URL } from './config'
 import './App.css'
-
-const KNOWN_TOPICS = ['linear equation', 'binomial theorem', 'probability']
 
 function getStudentId() {
   const user = JSON.parse(localStorage.getItem('tutor-user') || 'null')
@@ -24,7 +22,7 @@ function createEmptySession() {
   return {
     id: Date.now(),
     title: 'New chat',
-    messages: [{ sender: 'bot', type: 'normal', text: 'Hi! Try asking me about linear equations, the binomial theorem, or probability — or ask something unrelated to see what happens.' }]
+    messages: [{ sender: 'bot', type: 'normal', text: 'Hi! Ask me about any topic your teacher has uploaded material for, or attach a photo of a problem — or ask something unrelated to see what happens.' }]
   }
 }
 
@@ -104,13 +102,56 @@ function ChatScreen({ pendingQuestion, onConsumePending }) {
           sender: 'bot', type: 'answer', text: data.answer,
           awaitingFeedback: data.awaiting_feedback, feedbackResolved: false
         }]
-        const lowerQuery = query.toLowerCase()
-        const knownTopic = KNOWN_TOPICS.find(t => lowerQuery.includes(t))
-        if (knownTopic) newMsgs.push({ sender: 'bot', type: 'offer-quiz', topic: knownTopic })
+        if (!data.is_followup) newMsgs.push({ sender: 'bot', type: 'offer-quiz', topic: query })
         updateActiveMessages(msgs => [...msgs.filter(m => m.type !== 'thinking'), ...newMsgs])
       }
     } catch {
       updateActiveMessages(msgs => [...msgs.filter(m => m.type !== 'thinking'), { sender: 'bot', type: 'refusal', text: "Couldn't reach the tutor server. Make sure it's running." }])
+    }
+  }
+
+  const fileInputRef = useRef(null)
+
+  async function handleFileSelected(e) {
+    const file = e.target.files?.[0]
+    e.target.value = null
+    if (!file) return
+
+    const query = input.trim()
+    setInput('')
+
+    setSessions(prev => prev.map(s => {
+      if (s.id !== activeSession.id) return s
+      const isFirstUserMessage = s.messages.filter(m => m.sender === 'user').length === 0
+      return {
+        ...s,
+        title: isFirstUserMessage ? `📎 ${file.name}` : s.title,
+        messages: [
+          ...s.messages,
+          { sender: 'user', type: 'normal', text: query ? `📎 ${file.name} — ${query}` : `📎 ${file.name}` },
+          { sender: 'bot', type: 'thinking', text: 'Looking at your file...' }
+        ]
+      }
+    }))
+
+    try {
+      const formData = new FormData()
+      formData.append('file', file)
+      formData.append('student_id', getStudentId())
+      formData.append('query', query)
+      const res = await fetch(`${API_BASE_URL}/api/ask/upload`, { method: 'POST', body: formData })
+      const data = await res.json()
+
+      if (data.refused) {
+        updateActiveMessages(msgs => [...msgs.filter(m => m.type !== 'thinking'), { sender: 'bot', type: 'refusal', text: data.answer }])
+      } else {
+        updateActiveMessages(msgs => [...msgs.filter(m => m.type !== 'thinking'), {
+          sender: 'bot', type: 'answer', text: data.answer,
+          awaitingFeedback: data.awaiting_feedback, feedbackResolved: false
+        }])
+      }
+    } catch {
+      updateActiveMessages(msgs => [...msgs.filter(m => m.type !== 'thinking'), { sender: 'bot', type: 'refusal', text: "Couldn't reach the tutor server to read that file." }])
     }
   }
 
@@ -289,9 +330,10 @@ function ChatScreen({ pendingQuestion, onConsumePending }) {
             }
 
             if (msg.type === 'offer-quiz') {
+              const displayTopic = msg.topic.length > 45 ? msg.topic.slice(0, 45).trim() + '…' : msg.topic
               return (
                 <div key={index} className="message bot offer-quiz">
-                  <button className="quiz-start-btn" onClick={() => startQuiz(msg.topic)}>Test my understanding of {msg.topic} →</button>
+                  <button className="quiz-start-btn" onClick={() => startQuiz(msg.topic)}>Test my understanding of "{displayTopic}" →</button>
                 </div>
               )
             }
@@ -319,7 +361,9 @@ function ChatScreen({ pendingQuestion, onConsumePending }) {
           })}
         </div>
         <div className="input-area">
-          <input value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleSend()} placeholder="Ask about linear equations, binomial theorem, probability..." />
+          <input type="file" ref={fileInputRef} accept="image/*,.pdf" style={{ display: 'none' }} onChange={handleFileSelected} />
+          <button className="attach-file-btn" onClick={() => fileInputRef.current?.click()} title="Upload a photo or PDF" type="button">📎</button>
+          <input value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleSend()} placeholder="Ask a question, or attach a photo of a problem..." />
           <button onClick={() => handleSend()}>Send</button>
         </div>
       </div>

@@ -7,7 +7,7 @@ import 'katex/dist/katex.min.css'
 import { API_BASE_URL } from './config'
 import './App.css'
 
-const TOPICS = [
+const DEFAULT_TOPICS = [
   { key: 'linear equation', label: 'Linear Equations' },
   { key: 'binomial theorem', label: 'Binomial Theorem' },
   { key: 'probability', label: 'Probability' }
@@ -57,6 +57,21 @@ function PracticeScreen({ onAskPrerequisite }) {
   const [errorMsg, setErrorMsg] = useState(null)
     const [showSolution, setShowSolution] = useState(false)
   const [prevIndex, setPrevIndex] = useState(session?.currentIndex)
+  const [topics, setTopics] = useState(DEFAULT_TOPICS)
+
+  useEffect(() => {
+    // Subjects come from the backend so a teacher's newly uploaded material shows
+    // up here without a frontend code change — falls back to the 3 shipped
+    // defaults (already shown immediately above) if the fetch fails.
+    fetch(`${API_BASE_URL}/api/subjects`)
+      .then(res => res.json())
+      .then(data => {
+        if (Array.isArray(data.subjects) && data.subjects.length > 0) {
+          setTopics(data.subjects.map(s => ({ key: s.key, label: s.label })))
+        }
+      })
+      .catch(() => { /* keep the defaults already shown */ })
+  }, [])
 
   // Reset showSolution when the question changes, without setState-in-effect.
   if (session?.currentIndex !== prevIndex) {
@@ -165,7 +180,7 @@ function PracticeScreen({ onAskPrerequisite }) {
       <div className="practice-container">
         <h3>What do you want to practice?</h3>
         <div className="topic-picker">
-          {TOPICS.map(t => (
+          {topics.map(t => (
             <button key={t.key} className="topic-picker-btn" onClick={() => handleSelectTopic(t.key, t.label)}>{t.label}</button>
           ))}
         </div>

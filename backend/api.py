@@ -5,6 +5,7 @@ import re
 import time
 import uuid
 import auth
+import auto_ingest
 
 import faiss
 import numpy as np
@@ -12,7 +13,7 @@ from fastembed import TextEmbedding
 import google.generativeai as genai
 from google.api_core.exceptions import ResourceExhausted
 from dotenv import load_dotenv
-from fastapi import FastAPI
+from fastapi import FastAPI, Depends, Header, HTTPException, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -57,6 +58,37 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+def get_current_user(authorization: str = Header(None)):
+    """Reads 'Authorization: Bearer <token>', decodes it, and returns
+    {"email": ..., "role": ...}. Raises 401 if the header is missing or the
+    token is invalid/expired. Existing endpoints (ask, practice, insights)
+    intentionally don't use this — they still work for anonymous/local-id
+    students exactly as before. Only the new teacher-only endpoints require it."""
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing or malformed Authorization header.")
+    token = authorization.removeprefix("Bearer ").strip()
+    user = auth.decode_access_token(token)
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid or expired token. Please sign in again.")
+    return user
+
+
+def require_teacher(user: dict = Depends(get_current_user)):
+    if user["role"] != "teacher":
+        raise HTTPException(status_code=403, detail="This action is only available to teacher accounts.")
+    return user
+
+
+MATERIALS_DIR = "materials"
+ALLOWED_MATERIAL_EXTENSIONS = {".pdf", ".txt"}
+MAX_MATERIAL_UPLOAD_BYTES = 25 * 1024 * 1024  # 25MB
+
+ALLOWED_UPLOAD_MIME_TYPES = {
+    "image/jpeg", "image/png", "image/webp", "image/heic", "image/heif", "application/pdf"
+}
+MAX_CHAT_UPLOAD_BYTES = 15 * 1024 * 1024  # 15MB — Gemini's inline-data limit has headroom above this
 
 
 JSON_GENERATION_CONFIG = genai.GenerationConfig(response_mime_type="application/json")
@@ -192,24 +224,6 @@ PREREQUISITE_MAP = {
     "probability": ["basic fractions and ratios", "counting outcomes"],
 }
 
-KNOWN_TOPICS = list(PREREQUISITE_MAP.keys())
-
-
-def detect_topic(query):
-    lower = query.lower()
-    for t in KNOWN_TOPICS:
-        if t in lower:
-            return t
-    return None
-
-
-def topic_already_covered(student_id, topic):
-    history = db.get_conversation_history(student_id)
-    for entry in history:
-        if detect_topic(entry["query"]) == topic:
-            return True
-    return False
-
 
 SOURCE_PATTERN = re.compile(r"\[Source: (.+?), page (\d+)\]")
 
@@ -318,17 +332,26 @@ Student question: {query}
 Answer:"""
 
 
-def build_prereq_check_prompt(topic, prerequisite, context):
-    return f"""Using ONLY the context below, write a short multiple-choice check-in question testing
-whether a student recalls or understands "{prerequisite}" — a concept that "{topic}" depends on.
-Write exactly 2 answer options, only one correct, quick and low-stakes.
+def build_upload_prompt(query):
+    """For photos/PDFs a student uploads directly in chat — e.g. a photo of a
+    homework problem or their own handwritten attempt at one. Unlike
+    build_concept_prompt, there's no retrieved textbook context to ground this
+    in; the content the student uploaded IS the context, so the model is told
+    to read it carefully instead of being restricted to a chunk of material."""
+    return f"""You are a warm, encouraging tutor. A student has uploaded a photo or document —
+read everything visible in it (handwritten or printed text, diagrams, equations, tables) carefully
+before answering.
 
-Context:
-{context}
+The student's question about it: "{query or 'Can you help me understand or solve what is shown here?'}"
 
-Respond with ONLY valid JSON in this exact format, no markdown, no extra text:
-{{"question": "...", "options": ["...", "..."], "correct_index": 0}}
-"correct_index" must be the 0-based index into "options" of the correct answer."""
+- If it shows a problem to solve, walk through the solution step by step, thinking out loud like a
+  tutor sitting next to the student — don't just state the final answer.
+- If it shows the student's own worked attempt, point out specifically what they did right and
+  exactly where any mistake is, rather than only marking it right or wrong.
+- Format ALL mathematical notation using LaTeX wrapped in dollar signs (e.g. $\\frac{{A}}{{B}}$, $x^2$).
+- If the image/document is unreadable, blurry, or not academic content, say so clearly and ask the
+  student to retake or reupload it — don't guess at content you can't actually make out.
+- End by asking: "Did that make sense?\""""
 
 
 asked_problems_by_topic = {}
@@ -373,7 +396,8 @@ def ask(req: AskRequest):
         "answer": response.text,
         "is_followup": is_followup,
         "used_breakthrough": bool(breakthroughs),
-        "awaiting_feedback": True
+        "awaiting_feedback": True,
+        "sources": extract_sources_from_context(context)
         }
     except Exception as e:
         print(f"[/api/ask] failed: {e}")
@@ -405,6 +429,60 @@ def ask_feedback(req: FeedbackRequest):
     except Exception as e:
         print(f"[/api/ask/feedback] failed: {e}")
         return {"error": f"⚠️ {e}"}
+
+
+@app.post("/api/ask/upload")
+async def ask_with_upload(
+    student_id: str = Form(...),
+    query: str = Form(""),
+    file: UploadFile = File(...),
+):
+    """Lets a student attach a photo or PDF (e.g. a snapped picture of a homework
+    problem or their own worked attempt) instead of, or alongside, typing a question.
+    Unlike /api/ask, this doesn't go through the textbook-retrieval/confidence-gate —
+    the uploaded file itself is the context the model reads from."""
+    content_type = (file.content_type or "").lower()
+    if content_type not in ALLOWED_UPLOAD_MIME_TYPES:
+        return {"refused": True, "answer": "That file type isn't supported yet — please upload a JPG/PNG photo or a PDF.", "sources": []}
+
+    file_bytes = await file.read()
+    if len(file_bytes) > MAX_CHAT_UPLOAD_BYTES:
+        return {"refused": True, "answer": "That file is too large (max 15MB) — try a smaller photo or a lower-resolution scan.", "sources": []}
+    if not file_bytes:
+        return {"refused": True, "answer": "That file came through empty — please try uploading it again.", "sources": []}
+
+    try:
+        prompt_parts = [{"mime_type": content_type, "data": file_bytes}, build_upload_prompt(query.strip())]
+        response = safe_generate(prompt_parts)
+        answer = fix_unwrapped_latex(response.text)
+
+        log_note = f"[Uploaded file: {file.filename}] {query.strip()}".strip()
+        db.log_conversation(student_id, log_note, "(student-uploaded file — no textbook context)", answer)
+
+        return {"refused": False, "answer": answer, "awaiting_feedback": True, "sources": []}
+    except Exception as e:
+        print(f"[/api/ask/upload] failed: {e}")
+        return {"refused": True, "answer": f"⚠️ {e}", "sources": []}
+
+
+@app.get("/api/subjects")
+def list_subjects():
+    """Subjects available to practice/ask about. Starts with the 3 the app shipped
+    with, then adds whatever subjects teachers have uploaded material for — this is
+    what makes 'more subjects' possible without a code change: a teacher uploads a
+    new subject's material through the portal, and it shows up here immediately."""
+    default_subjects = [
+        {"key": "linear equation", "label": "Linear Equations"},
+        {"key": "binomial theorem", "label": "Binomial Theorem"},
+        {"key": "probability", "label": "Probability"},
+    ]
+    seen_keys = {s["key"] for s in default_subjects}
+    for subject in db.get_distinct_subjects():
+        key = subject.strip().lower()
+        if key and key not in seen_keys:
+            seen_keys.add(key)
+            default_subjects.append({"key": subject, "label": subject})
+    return {"subjects": default_subjects}
 
 
 class GenerateRequest(BaseModel):
@@ -523,6 +601,7 @@ class SignupRequest(BaseModel):
     name: str
     email: str
     password: str
+    role: str = "student"
 
 
 @app.post("/api/auth/signup")
@@ -531,11 +610,12 @@ def signup(req: SignupRequest):
     if existing:
         return {"error": "An account with this email already exists."}
 
+    role = req.role if req.role in ("student", "teacher") else "student"
     hashed = auth.hash_password(req.password)
-    db.create_user(req.name, req.email, hashed)
+    db.create_user(req.name, req.email, hashed, role=role)
 
-    token = auth.create_access_token(req.email)
-    return {"token": token, "name": req.name, "email": req.email}
+    token = auth.create_access_token(req.email, role=role)
+    return {"token": token, "name": req.name, "email": req.email, "role": role}
 
 
 class LoginRequest(BaseModel):
@@ -549,5 +629,127 @@ def login(req: LoginRequest):
     if not user or not auth.verify_password(req.password, user["hashed_password"]):
         return {"error": "Invalid email or password."}
 
-    token = auth.create_access_token(req.email)
-    return {"token": token, "name": user["name"], "email": user["email"]}
+    role = user.get("role", "student")
+    token = auth.create_access_token(req.email, role=role)
+    return {"token": token, "name": user["name"], "email": user["email"], "role": role}
+
+
+@app.post("/api/teacher/materials/upload")
+async def upload_material(
+    subject: str = Form(...),
+    file: UploadFile = File(...),
+    current_user: dict = Depends(require_teacher),
+):
+    """Teacher uploads a PDF/TXT of course material tagged with a subject. It gets
+    chunked and embedded into the exact same chunks.json/materials.index that
+    /api/ask and /api/practice/generate already read from — as soon as this
+    finishes, students can immediately ask about or get quizzed on that subject,
+    no server restart needed, because we reload the in-memory chunks/index below."""
+    subject = subject.strip()
+    if not subject:
+        return {"error": "Please provide a subject name for this material."}
+
+    ext = os.path.splitext(file.filename or "")[1].lower()
+    if ext not in ALLOWED_MATERIAL_EXTENSIONS:
+        return {"error": "Only PDF or TXT files are supported for course material right now."}
+
+    contents = await file.read()
+    if len(contents) > MAX_MATERIAL_UPLOAD_BYTES:
+        return {"error": "File is too large (max 25MB)."}
+    if not contents:
+        return {"error": "That file came through empty — please try uploading it again."}
+
+    os.makedirs(MATERIALS_DIR, exist_ok=True)
+    stored_name = f"{uuid.uuid4().hex}{ext}"
+    filepath = os.path.join(MATERIALS_DIR, stored_name)
+    with open(filepath, "wb") as f:
+        f.write(contents)
+
+    try:
+        chunk_count = auto_ingest.ingest_single_file(
+            filepath, subject=subject, uploaded_by=current_user["email"], embed_model=embed_model
+        )
+    except ValueError as e:
+        os.remove(filepath)
+        return {"error": str(e)}
+    except Exception as e:
+        os.remove(filepath)
+        print(f"[upload_material] failed: {e}")
+        return {"error": f"⚠️ Couldn't process this file: {e}"}
+
+    # Reload so this process's retrieve() sees the new material immediately —
+    # ingest_single_file() wrote the updated chunks.json/materials.index to disk,
+    # but this running server still has the pre-upload copies in memory.
+    global chunks, index
+    with open("chunks.json", "r", encoding="utf-8") as f:
+        chunks = json.load(f)
+    index = faiss.read_index("materials.index")
+
+    db.create_material(current_user["email"], subject, stored_name, file.filename, chunk_count)
+
+    return {"uploaded": True, "filename": file.filename, "subject": subject, "chunks_added": chunk_count}
+
+
+@app.get("/api/teacher/materials")
+def list_materials(current_user: dict = Depends(require_teacher)):
+    return {"materials": db.get_materials_by_teacher(current_user["email"])}
+
+
+@app.get("/api/teacher/insights")
+def teacher_insights(current_user: dict = Depends(require_teacher)):
+    """Class-wide performance for the teacher dashboard: weakest topics overall,
+    plus a per-student breakdown. Deliberately shows accuracy/attempts per student
+    rather than individual wrong answers — framed around where students need help,
+    not surveillance of exactly what they got wrong."""
+    gaps = db.get_all_attempts()
+    if not gaps:
+        return {"topics": [], "students": [], "total_attempts": 0}
+
+    names_by_email = {u["email"]: u["name"] for u in db.get_all_users()}
+
+    canonical_topics = []
+    topic_stats = {}
+    student_stats = {}
+
+    for g in gaps:
+        t = g["topic"]
+        matched = next((c for c in canonical_topics if topics_match(t, c)), None)
+        if matched is None:
+            canonical_topics.append(t)
+            matched = t
+            topic_stats[matched] = {"attempts": 0, "wrong": 0}
+        topic_stats[matched]["attempts"] += 1
+        if not g["correct"]:
+            topic_stats[matched]["wrong"] += 1
+
+        sid = g["student_id"]
+        if sid not in student_stats:
+            student_stats[sid] = {"attempts": 0, "correct": 0, "topics": {}}
+        student_stats[sid]["attempts"] += 1
+        student_stats[sid]["correct"] += int(bool(g["correct"]))
+        student_stats[sid]["topics"].setdefault(matched, {"attempts": 0, "wrong": 0})
+        student_stats[sid]["topics"][matched]["attempts"] += 1
+        if not g["correct"]:
+            student_stats[sid]["topics"][matched]["wrong"] += 1
+
+    topics = sorted(
+        [{"topic": t, "attempts": s["attempts"], "struggle_rate": round((s["wrong"] / s["attempts"]) * 100)} for t, s in topic_stats.items()],
+        key=lambda x: x["struggle_rate"], reverse=True
+    )
+
+    students = []
+    for sid, s in student_stats.items():
+        weakest_topic = min(
+            s["topics"].items(),
+            key=lambda kv: (kv[1]["attempts"] - kv[1]["wrong"]) / kv[1]["attempts"]
+        )[0] if s["topics"] else None
+        students.append({
+            "student_id": sid,
+            "name": names_by_email.get(sid),
+            "attempts": s["attempts"],
+            "accuracy": round((s["correct"] / s["attempts"]) * 100),
+            "weakest_topic": weakest_topic,
+        })
+    students.sort(key=lambda s: s["accuracy"])
+
+    return {"topics": topics, "students": students, "total_attempts": len(gaps)}
